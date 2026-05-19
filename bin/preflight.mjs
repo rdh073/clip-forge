@@ -41,9 +41,9 @@ const keys = [
   { name: 'IG_APP_ID',        ok: !!process.env.IG_APP_ID,        optional: true,  fallback: 'publish to Reels off'  },
 ];
 
-const modelPath = resolve(PLUGIN_ROOT, 'bin/models/face_detector.tflite');
+const modelPath = resolve(PLUGIN_ROOT, 'bin/models/face_detector.onnx');
 const modelOk = existsSync(modelPath) && (() => {
-  try { return statSync(modelPath).size > 100_000; } catch { return false; }
+  try { return statSync(modelPath).size > 500_000; } catch { return false; }
 })();
 
 const lines = [];
@@ -53,8 +53,8 @@ for (const b of bins) {
                   : '  ❌ ' + b.name + '  → ' + b.hint);
 }
 lines.push(modelOk
-  ? '  ✅ face_detector.tflite present'
-  : '  ⚠  face_detector.tflite missing  (run `node bin/install-models.mjs` for face-tracked reframe; otherwise center-crop fallback is used)');
+  ? '  ✅ face_detector.onnx present (Ultraface RFB-320)'
+  : '  ⚠  face_detector.onnx missing  (run `node bin/install-models.mjs` for face-tracked reframe; otherwise center-crop fallback is used)');
 for (const k of keys) {
   lines.push(k.ok ? '  ✅ ' + k.name
                   : '  ⚠  ' + k.name + ' unset  (fallback: ' + k.fallback + ')');

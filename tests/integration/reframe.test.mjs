@@ -80,21 +80,21 @@ test('cf-reframe end-to-end on demo video (skipped when ffmpeg missing)', { skip
     assert.ok(s.cy >= 0 && s.cy <= out.source_h, 'cy must be within source bounds');
   }
 
-  // v0.1.2 reality: face detection does not work in Node (MediaPipe is
-  // browser-only). EVERY invocation falls back to center-crop. Assert that
-  // explicitly so the test exercises what users actually get.
-  assert.equal(out.fallback_used, true, 'v0.1.2: fallback is the actual shipped behavior');
+  // testsrc has no faces, so the no-face fallback kicks in. The exact
+  // reason depends on whether the model file is installed in this run:
+  //   • model present → low_face_yield (detector ran, found nothing)
+  //   • model absent  → model_missing  (detector never initialized)
+  // Either is a valid fallback; assert it triggered and metadata is honest.
+  assert.equal(out.fallback_used, true, 'testsrc has no faces → fallback should trigger');
   assert.equal(out.detector, 'center-fallback', 'detector field should record the fallback variant');
-  assert.ok(
-    typeof out.fallback_reason === 'string' && out.fallback_reason.includes('mediapipe_not_supported_in_node'),
-    'fallback_reason should surface the documented v0.1.2 status; got: ' + out.fallback_reason
-  );
+  assert.ok(typeof out.fallback_reason === 'string' && out.fallback_reason.length > 0,
+    'fallback_reason should be populated; got: ' + out.fallback_reason);
 
   // Cleanup
   try { rmSync(OUT_PATH); } catch {}
 });
 
-test('v0.1.2 reality: face detection is disabled, fallback_reason surfaces it', { skip: !HAS_FFMPEG, timeout: 30_000 }, () => {
+test('fallback metadata is populated when no faces are present', { skip: !HAS_FFMPEG, timeout: 30_000 }, () => {
   ensureDemoVideo();
   const r = spawnSync('node', [
     resolve(PLUGIN_ROOT, 'bin/cf-reframe'),
@@ -104,13 +104,13 @@ test('v0.1.2 reality: face detection is disabled, fallback_reason surfaces it', 
   ], { encoding: 'utf-8' });
   assert.equal(r.status, 0, r.stderr);
   const out = JSON.parse(readFileSync(OUT_PATH, 'utf-8'));
-  // Reality-aligned assertions — these match what cf-reframe actually does
-  // in this release, not what we wish it did.
+  // Reality check: fallback should trigger and reason should be informative.
+  // The Phase 2E success-path test (added separately with a face fixture)
+  // exercises the non-fallback success path.
   assert.equal(out.fallback_used, true);
-  assert.ok(out.fallback_reason.includes('mediapipe_not_supported_in_node'),
-    'fallback_reason should disclose the MediaPipe / Node mismatch; got: ' + out.fallback_reason);
-  assert.ok(out.fallback_reason.includes('v0.2.0'),
-    'fallback_reason should point users to the roadmap fix');
+  assert.ok(out.fallback_reason && out.fallback_reason.length > 0);
+  assert.match(out.fallback_reason, /(low_face_yield|model_missing|detector_unavailable)/,
+    'fallback_reason should classify the cause; got: ' + out.fallback_reason);
   try { rmSync(OUT_PATH); } catch {}
 });
 

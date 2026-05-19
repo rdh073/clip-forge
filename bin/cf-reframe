@@ -25,6 +25,7 @@ import { dirname, resolve as resolvePath } from 'node:path';
 
 import { extractFrames } from './lib/frame-extractor.mjs';
 import { initDetector, detectFaces, closeDetector, isDetectorReady, getDisabledReason } from './lib/face-detector.mjs';
+import { initLandmarker, detectLandmarks, closeLandmarker, isLandmarkerReady, getLandmarkerReason } from './lib/landmark-detector.mjs';
 import { ActiveSpeakerTracker, parseSpeakerMap, autoCalibrateSpeakerMap } from './lib/active-speaker.mjs';
 import { writeDebugPpm } from './lib/debug-frame.mjs';
 
@@ -210,8 +211,8 @@ async function collectLeadIn(opts) {
   })) {
     let faces = [];
     try {
-      faces = detectFaces(frame.rgb, frame.width, frame.height, frame.tMs,
-                          frame.sourceWidth, frame.sourceHeight);
+      faces = await detectFaces(frame.rgb, frame.width, frame.height, frame.tMs,
+                                frame.sourceWidth, frame.sourceHeight);
     } catch { /* ignore per-frame */ }
     samples.push({ tMs: frame.tMs, faces });
   }
@@ -241,6 +242,13 @@ async function detectPath(opts, srcW, srcH, targetW, targetH) {
     return { samples: null, reason: 'detector_unavailable: ' + (getDisabledReason() || 'unknown'),
              speakerMap };
   }
+  // Pre-warm the landmarker so the frame-budget heuristic below sees its
+  // readiness state before the loop starts. Lazy-init inside the loop would
+  // race the budget check on the first frame.
+  await initLandmarker({});
+  if (!isLandmarkerReady()) {
+    jlog(opts, { event: 'warn', msg: 'landmarker_unavailable: ' + (getLandmarkerReason() || 'unknown') + ' — proceeding without 68-pt keypoints' });
+  }
 
   if (speakerMapWantsAuto) {
     jlog(opts, { event: 'calibration_start' });
@@ -258,7 +266,11 @@ async function detectPath(opts, srcW, srcH, targetW, targetH) {
 
   if (opts.debug) mkdirSync('./debug', { recursive: true });
 
-  const FRAME_BUDGET_MS = 200; // soft per-frame budget; see Phase F notes in CHANGELOG
+  // Soft per-frame budget. v0.1.x was sized for face detection only (200ms);
+  // v0.2.0 chains detection → PFLD landmark on each face, so the realistic
+  // ceiling is higher. We bump to 1000ms when the landmarker is loaded so
+  // the cooldown doesn't fire on every frame and starve the pipeline.
+  const FRAME_BUDGET_MS = isLandmarkerReady() ? 1000 : 200;
   const raw = [];
   let framesProcessed = 0;
   let framesWithFace = 0;
@@ -266,6 +278,14 @@ async function detectPath(opts, srcW, srcH, targetW, targetH) {
   let lastGood = null;
   let lastDebugFrame = -30;
   let skipDetectFor = 0; // cooldown: skip detect on next N frames after a slow one
+
+  // Phase 2E diagnostics — surface enough state for the success-path test to
+  // distinguish a real face-tracked render from a silent fallback regression.
+  let prevFaceId = null;
+  let trackerFlips = 0;
+  let samplesWithKeypoints = 0;
+  const mouthYs = [];
+  let totalLandmarksPerFace = 0; // sampled on the first frame that has them; should be 68 for PFLD-68
 
   let extractorOk = true;
   let extractorErr = null;
@@ -286,8 +306,22 @@ async function detectPath(opts, srcW, srcH, targetW, targetH) {
       } else {
         const t0 = Date.now();
         try {
-          faces = detectFaces(frame.rgb, frame.width, frame.height, frame.tMs,
-                              frame.sourceWidth, frame.sourceHeight);
+          faces = await detectFaces(frame.rgb, frame.width, frame.height, frame.tMs,
+                                    frame.sourceWidth, frame.sourceHeight);
+          // Phase 2B: augment each face with PFLD 68-point landmarks (lazy init).
+          if (faces.length > 0) {
+            if (!isLandmarkerReady() && !getLandmarkerReason()) {
+              await initLandmarker({});
+            }
+            if (isLandmarkerReady()) {
+              const augmented = [];
+              for (const f of faces) {
+                augmented.push(await detectLandmarks(f, frame.rgb, frame.width, frame.height,
+                                                     frame.sourceWidth, frame.sourceHeight));
+              }
+              faces = augmented;
+            }
+          }
         } catch (e) {
           faces = [];
           jlog(opts, { event: 'frame_detect_threw', t_ms: frame.tMs, error: e.message });
@@ -307,6 +341,20 @@ async function detectPath(opts, srcW, srcH, targetW, targetH) {
       framesWithFace++;
       lastGood = { cx: pick.face.x, cy: pick.face.y };
       raw.push({ t_ms: frame.tMs, cx: pick.face.x, cy: pick.face.y });
+
+      // Diagnostics: count tracker-id flips between consecutive face-bearing frames.
+      if (prevFaceId != null && pick.faceId != null && pick.faceId !== prevFaceId) {
+        trackerFlips++;
+      }
+      prevFaceId = pick.faceId;
+
+      // Diagnostics: keypoint coverage + mouth_y series (for stddev assertion).
+      const kp = pick.face.keypoints;
+      if (kp && kp.all && kp.all.length > 0) {
+        samplesWithKeypoints++;
+        if (totalLandmarksPerFace === 0) totalLandmarksPerFace = kp.all.length;
+        if (kp.mouth && typeof kp.mouth.y === 'number') mouthYs.push(kp.mouth.y);
+      }
     } else if (lastGood) {
       raw.push({ t_ms: frame.tMs, cx: lastGood.cx, cy: lastGood.cy });
     } else {
@@ -360,7 +408,25 @@ async function detectPath(opts, srcW, srcH, targetW, targetH) {
   }));
   samples = clampVelocity(samples, opts.maxPanPxS);
 
-  return { samples, framesProcessed, framesWithFace, framesSlow, speakerMap, extractorOk };
+  // Compute diagnostic aggregates for the success-path test.
+  const mouthYStddev = stddev(mouthYs);
+  const landmarkDetector = isLandmarkerReady() ? 'onnx@pfld-68' : null;
+
+  return {
+    samples, framesProcessed, framesWithFace, framesSlow, speakerMap, extractorOk,
+    landmarkDetector,
+    trackerFlips,
+    samplesWithKeypoints,
+    totalLandmarksPerFace,
+    mouthYStddev,
+  };
+}
+
+function stddev(arr) {
+  if (!arr || arr.length < 2) return 0;
+  const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
+  const variance = arr.reduce((a, b) => a + (b - mean) ** 2, 0) / arr.length;
+  return Math.sqrt(variance);
 }
 
 (async () => {
@@ -387,38 +453,41 @@ async function detectPath(opts, srcW, srcH, targetW, targetH) {
   let samples = null;
   let fallback = false;
   let reason = null;
-  let detectorLabel = 'mediapipe@blazeface-short';
+  let detectorLabel = 'onnxruntime@ultraface-rfb-320';
   let stats = null;
   let resolvedMap = null;
+  let landmarkDetectorLabel = null;
 
   if (opts.mode === 'face') {
     try {
       const r = await detectPath(opts, srcW, srcH, targetW, targetH);
       samples = r.samples;
       reason = r.reason || null;
+      landmarkDetectorLabel = r.landmarkDetector || null;
       if (r.samples) {
         stats = {
           framesProcessed: r.framesProcessed,
           framesWithFace: r.framesWithFace,
           framesSlow: r.framesSlow || 0,
           extractorOk: r.extractorOk !== false,
+          trackerFlips: r.trackerFlips || 0,
+          samplesWithKeypoints: r.samplesWithKeypoints || 0,
+          totalLandmarksPerFace: r.totalLandmarksPerFace || 0,
+          mouthYStddev: +(r.mouthYStddev || 0).toFixed(3),
         };
       } else if (r.framesProcessed) {
-        // Even when falling back, record the stats — useful for debugging.
         stats = {
           framesProcessed: r.framesProcessed,
           framesWithFace: r.framesWithFace || 0,
           framesSlow: r.framesSlow || 0,
         };
       }
-      // Record the parsed/calibrated speaker map regardless of detection outcome
-      // — it documents what was attempted and lets downstream tools verify the
-      // CLI flag was honored.
       resolvedMap = r.speakerMap || null;
     } catch (e) {
       reason = 'detect_threw: ' + e.message;
     } finally {
       closeDetector();
+      closeLandmarker();
     }
   } else {
     reason = 'mode=' + opts.mode + ' (face detection skipped)';
@@ -440,6 +509,7 @@ async function detectPath(opts, srcW, srcH, targetW, targetH) {
     target_h: targetH,
     mode: fallback ? opts.fallbackMode : opts.mode,
     detector: detectorLabel,
+    landmark_detector: landmarkDetectorLabel,
     samples,
     interp: 'linear',
     fallback_used: fallback,

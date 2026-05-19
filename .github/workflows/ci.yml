@@ -72,5 +72,10 @@ jobs:
         if: matrix.os == 'macos-latest'
         run: brew install ffmpeg
 
+      - name: Install ONNX models
+        # Required so success-path integration tests actually run instead of
+        # skipping. The two models total ~4 MB; ~5 s on either runner.
+        run: npm run install-models
+
       - name: Run tests
         run: npm test

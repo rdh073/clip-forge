@@ -153,6 +153,35 @@ test('tracker: with transcript + speakerMap uses audio 0.3 / mouth 0.5 / central
   assert.equal(t.weights.confidence, 0.1);
 });
 
+test('tracker: mouth-motion cue increases when mouth keypoint moves between frames', () => {
+  // Two faces; face A's mouth stays put, face B's mouth moves vertically each
+  // frame. After a few frames the rolling mouth-delta for B should drive the
+  // mouth cue toward B. Damper is disabled so the assertion isolates the cue.
+  const tracker = new ActiveSpeakerTracker({
+    weights: { audio: 0, mouth: 1.0, central: 0, confidence: 0 },
+    switchCooldownMs: 0,
+    frameLockN: 0,
+  });
+  const ctx = { frameWidth: 1920, frameHeight: 1080 };
+
+  const A = { x: 500,  y: 540, w: 200, h: 200, confidence: 0.9, keypoints: { mouth: { x: 500,  y: 600 } } };
+  const Bbase = { x: 1400, y: 540, w: 200, h: 200, confidence: 0.9 };
+
+  // Seed both with one frame so mouthHistory has a baseline entry.
+  tracker.pickActiveFace([A, { ...Bbase, keypoints: { mouth: { x: 1400, y: 600 } } }],
+                        { ...ctx, tMs: 0 });
+
+  // Frames 2-6: A static, B's mouth oscillates ±30 px.
+  let last = null;
+  for (let i = 1; i <= 6; i++) {
+    const movedB = { ...Bbase, keypoints: { mouth: { x: 1400, y: 600 + (i % 2 === 0 ? 30 : -30) } } };
+    last = tracker.pickActiveFace([A, movedB], { ...ctx, tMs: i * 200 });
+  }
+
+  assert.equal(last.face.x, 1400, 'face B (the one with moving mouth) should be chosen with damper off');
+  assert.equal(last.scores.mouth, 1, "B's normalized mouth score should be 1.0 (max in frame)");
+});
+
 test('tracker: deterministic with fixed inputs + weights', () => {
   // Same inputs, fresh tracker → same outputs every time.
   const make = () => new ActiveSpeakerTracker({
