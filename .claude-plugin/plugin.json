@@ -1,7 +1,7 @@
 {
   "name": "clip-forge",
   "description": "Turn long videos into 10+ viral shorts — AI clip detection, auto-reframe, viral captions, render, schedule, publish. All from your terminal.",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "author": {
     "name": "rdh073"
   },

@@ -5,6 +5,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-05-19
+
 ### Fixed
 
 - **CR-4:** version drift across `plugin.json`, `package.json`,
