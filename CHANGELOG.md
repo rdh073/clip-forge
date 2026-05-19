@@ -5,6 +5,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-19
+
 This section will become **v0.2.0** when the `bench/v0.2.0` branch lands.
 
 ### Added
@@ -86,7 +88,6 @@ pool, optional GPU execution provider.
 - `bin/wasm/` directory (briefly added mid-v0.2.0 development for a MediaPipe
   vendoring attempt that was abandoned when we swapped to ONNX). `.gitignore`
   entry retained.
-
 
 ## [0.1.2] - 2026-05-19
 
