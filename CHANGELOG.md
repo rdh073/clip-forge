@@ -5,32 +5,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Fixed
-
-- **CR-2:** `bin/cf-ffmpeg` now consumes the full `samples[]` timeline via a
-  piecewise crop expression. Previously, only `samples[0]` was used,
-  collapsing all Kalman / tracker / active-speaker work into a static
-  crop. The original Phase 2D spec called for `ffmpeg sendcmd` but
-  empirical test against `ffmpeg 6.1.1-3ubuntu5` showed the `crop` filter
-  returns `AVERROR(ENOSYS)` for both `x`/`y` and generic `reinit` commands —
-  documented upstream gap, not packaging. See `docs/bench-v0.2.0.md`
-  Phase 2D for the trace logs.
+This section will become **v0.2.0** when the `bench/v0.2.0` branch lands.
 
 ### Added
 
-- `bin/lib/crop-expression-builder.mjs` — `computeCropDims`, `buildCropExpression`,
-  `buildFilterArg`, `buildFilterScript`, `chooseRenderMode`, `escapeFilterArg`.
-  20 unit tests covering coordinate transform, clamping, dedupe, stride-downsample,
-  filter-script routing, and the 99-keyframe ffmpeg expression ceiling.
-- `bin/cf-ffmpeg reframe-animated` — stand-alone crop-only renderer that takes
-  `--crop-path`/`--source`/`--output` flags. Decoupled from the manifest-driven
-  full-pipeline `render` subcommand for testing.
-- `chooseRenderMode` routes between `static` (≤1 keyframe), `inline` (<100 KB
-  expression), and `filter-script` (≥100 KB) modes. Threshold is overridable.
-- `bin/lib/face-tracker.mjs` — IoU-based identity tracker (8 unit tests).
-- `bin/lib/landmark-detector.mjs` — PFLD 68-point ONNX wrapper (Phase 2B).
-- `tests/fixtures/talking-head-5s.mp4` — 5-pose CGI synth fixture (188 KB) for
-  end-to-end smoke testing.
+- **Ultraface RFB-320 face detection** (`onnxruntime@ultraface-rfb-320`)
+  via `onnxruntime-node`. Replaces the v0.1.x browser-only `@mediapipe/tasks-vision`
+  integration. No Node engine ceiling.
+- **PFLD 68-point landmark stage** (`onnx@pfld-68`). Per-face mesh:
+  jaw[17] · eyebrowL[5] · eyebrowR[5] · nose[9] · eyeL[6] · eyeR[6] ·
+  mouthOuter[12] · mouthInner[8] + `mouth`/`eyeL_center`/`eyeR_center` centroid
+  aliases for active-speaker compat. Sourced from `cunjian/pytorch_face_landmark`
+  upstream (license caveat tracked in `docs/ROADMAP.md` v0.3.0).
+- **`FaceTracker` module** — pure-logic IoU-based identity tracker. ~90 lines,
+  deterministic, 8 unit tests. Replaces the v0.1.x Euclidean centroid heuristic
+  in `active-speaker._matchTracks`.
+- **Animated crop in `cf-ffmpeg`** via a piecewise `crop=W:H:exprX:exprY` ladder.
+  Builder in `bin/lib/crop-expression-builder.mjs` (`computeCropDims`,
+  `buildCropExpression`, `buildFilterArg`, `buildFilterScript`, `chooseRenderMode`,
+  `escapeFilterArg`) — 20 unit tests. `cf-ffmpeg reframe-animated` subcommand
+  for standalone crop testing.
+- **Success-path integration test** (`tests/integration/success-path.test.mjs`)
+  asserts positive evidence of face-tracked output:
+    - detector === `onnxruntime@ultraface-rfb-320` (not fallback)
+    - framesWithFace / framesProcessed > 0.8
+    - 68 landmarks per face, mouth_y stddev > 1 px
+    - tracker_flips / duration_s ≤ 1.0
+    - rendered mp4 has 3 distinct frame hashes at t=1.0/2.5/4.0 (CR-2 guard)
+- **`tests/fixtures/talking-head-5s.mp4`** — 188 KB CGI synth fixture used by
+  the success-path test.
+- **`docs/screenshots/v0.2.0-proof-t2.5s.png`** — visual proof frame.
+- New diagnostic fields in `crop_path.json`: `landmark_detector`,
+  `stats.trackerFlips`, `stats.samplesWithKeypoints`, `stats.totalLandmarksPerFace`,
+  `stats.mouthYStddev`.
+
+### Fixed
+
+- **CR-1:** Browser-only MediaPipe replaced with Node-native ONNX stack
+  (`onnxruntime-node` + `sharp`). The v0.1.x silent fallback path is gone.
+- **CR-2:** `bin/cf-ffmpeg` now consumes the full `samples[]` timeline via the
+  piecewise crop expression. v0.1.x collapsed everything to `samples[0]`.
+  Original Phase 2D spec called for `ffmpeg sendcmd` — empirical test against
+  `ffmpeg 6.1.1-3ubuntu5` showed the `crop` filter returns `AVERROR(ENOSYS)`
+  for both `x`/`y` and generic `reinit` commands (upstream gap, not packaging).
+  Pivoted to expression mode; bisected ffmpeg's nested-if ceiling at exactly
+  99 levels; mitigated with stride-downsampling. See `docs/bench-v0.2.0.md`
+  Phase 2D for the trace logs and bisection record.
+- **CR-5:** Real-fixture success-path test prevents silent fallback regression.
+  Run `npm test` before any release; the test class fails on any of: fallback
+  detector, missing keypoints, static crop, or identical sample frames.
+
+### Changed
+
+- `package.json` deps: `@mediapipe/tasks-vision` removed; `onnxruntime-node`
+  and `sharp` added. Engines: `node >=20` (no upper bound — onnxruntime
+  supports 24+).
+- `bin/install-models.mjs` downloads two ONNX models (~4 MB total) instead of
+  the v0.1.x BlazeFace .tflite. Supports `CF_PFLD_MODEL_URL` env override.
+- `bin/cf-reframe` defaults to `detector: 'onnxruntime@ultraface-rfb-320'`
+  (was `mediapipe@blazeface-short`).
+- Per-frame budget bumped to 1000 ms when the landmarker is active (was
+  200 ms for face-only v0.1.x).
+
+### Performance
+
+Measured on Linux x86_64, Node 20.20, CPU only:
+
+- Ultraface detect: **p50 9.5 ms / p95 21.8 ms** per frame
+- PFLD landmarks: **p50 59 ms / p95 63 ms** per face (ORT-only)
+- End-to-end per-face in pipeline: **p50 117 ms / p95 131 ms**
+- Projected: **30-minute source processes in ~27 minutes** at 6 fps sampling
+
+Speed-up tracked in `docs/ROADMAP.md` v0.3.0 — int8 quantization, worker-thread
+pool, optional GPU execution provider.
+
+### Removed
+
+- v0.1.2 "⚠ Status" README section (MediaPipe doesn't work in Node) — the
+  underlying issue is fixed. Historical note retained in this CHANGELOG.
+- `bin/wasm/` directory (briefly added mid-v0.2.0 development for a MediaPipe
+  vendoring attempt that was abandoned when we swapped to ONNX). `.gitignore`
+  entry retained.
 
 
 ## [0.1.2] - 2026-05-19

@@ -336,6 +336,76 @@ test for the smoke-regression case.
 | `npm test` | ✓ 53 pass, 2 skipped |
 | `claude plugin validate .` | ✓ |
 
+## Phase 2E — Success-path integration test
+
+The regression guard that should have existed since v0.1.0. Every assertion
+checks for *positive* evidence of a real face-tracked render — anything
+short of that fails, including the failure modes that produced the v0.1.x
+"silent fallback" disaster.
+
+### Test layers (mirror Phases 2A-D)
+
+| Layer | Assertions |
+|---|---|
+| **Detection** (2A) | `detector === 'onnxruntime@ultraface-rfb-320'`, `fallback_used === false`, `fallback_reason === null`, `stats.framesProcessed > 20`, `stats.framesWithFace / framesProcessed > 0.8` |
+| **Landmarks** (2B) | `landmark_detector === 'onnx@pfld-68'`, `totalLandmarksPerFace === 68`, `samplesWithKeypoints === framesWithFace` (no silent PFLD bailouts), `mouthYStddev > 1 px` (proves PFLD ran per frame, not cached) |
+| **Tracker** (2C) | `tracker_flips / duration_s ≤ 1.0` on a real-motion fixture |
+| **Animation** (2D) | `samples.length ≥ 25`, `stddev(cx) > 5 px` (crop moves), `stddev(cx) < 200 px` (sanity), `cf-ffmpeg reframe-animated` produces a valid 1080×1920 mp4, **3 sampled frames at t=1.0/2.5/4.0 have 3 distinct sha256 hashes** (the CR-2 regression guard) |
+
+### Skip-on-missing
+
+The success-path tests gate on:
+
+- `ffmpeg` on PATH
+- `tests/fixtures/talking-head-5s.mp4` present
+- `bin/models/face_detector.onnx` size > 500 KB
+- `bin/models/face_landmark.onnx` size > 1 MB
+
+A fresh checkout without `node bin/install-models.mjs` reports SKIP (not
+fail). CI green stays cheap; the gate is on releases.
+
+### Negative-path test
+
+`fallback-path: testsrc with no faces → static center fallback recorded
+honestly` ensures the fallback wiring stays alive — testsrc lavfi input
+must trigger `fallback_used: true`, populate `fallback_reason`, and emit a
+non-empty samples timeline so the renderer doesn't blow up downstream.
+
+### Fixture caveat — multi-figure CGI source
+
+`tests/fixtures/talking-head-5s.mp4` is synthesized from five
+`cgi-multiangle-*.jpg` images in upstream `@vladmandic/human` samples. Each
+of those images is itself a multi-figure composite of the same CGI model
+at different angles. The success-path test assertions hold regardless
+(detection / landmarks / crop motion are all valid), but the rendered
+proof crop at any given timestamp may show 1-2 of the 5 figures within
+the 9:16 slice rather than a single isolated face. A real podcast or
+talking-head source has one face per frame; on that input the rendered
+crop would isolate the single face. See
+`docs/screenshots/v0.2.0-proof-t2.5s.png` for the proof frame.
+
+### 100-nested-if discovery (engineering archeology)
+
+While integrating Phase 2D's animated crop, the 7000-sample stress test
+exposed an undocumented ffmpeg ceiling: **the expression parser caps at
+exactly 99 nested `if(...)` calls.** Binary-search verified between
+N=50 (works) and N=300 (fails); the boundary is 99/100. Not searchable
+on the public web before today — it lives in `eval.c`'s implicit
+recursion limit. Mitigated by stride-downsampling to 99 keyframes; Kalman
+smoothing makes one keyframe every ~18 s (on a 30-min source) more than
+adequate for face tracking bandwidth.
+
+### Coordinate-transform fix
+
+A subtle production-loose bug almost shipped: the original Phase 2D
+builder used `target_w`/`target_h` directly as the crop region size,
+which breaks whenever the source is smaller than the target (e.g. a
+640×360 downsample feeding a 1080×1920 portrait render — the crop slice
+would be "larger than the source"). The fix in `computeCropDims()`
+sizes the crop in **source pixel space** at the target's aspect ratio,
+then the renderer's `scale=tw:th` filter expands the slice to target.
+4 unit tests cover the math.
+
 ## Next-step gating
 
 Phase 1 awaits explicit approval before swapping the library. The pick

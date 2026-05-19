@@ -344,15 +344,30 @@ quantization, worker-thread parallelism, optional GPU execution provider.
 git clone https://github.com/rdh073/clip-forge
 cd clip-forge
 npm install
-node bin/install-models.mjs       # one-time BlazeFace model fetch
-npm test                          # 22 tests, runs under ~1s
+node bin/install-models.mjs       # one-time Ultraface + PFLD model fetch (~4 MB total)
+npm test                          # 59 tests pass, 2 skipped (fixture-gated)
 claude plugin validate .          # 0 errors, 0 warnings expected
 claude --plugin-dir .             # boot Claude Code with this plugin loaded
 ```
 
-Test fixtures for the real-detection paths aren't committed — drop your own
-PNGs into `tests/fixtures/` and run `npm run build-fixtures` to enable the
-two currently-skipped detector tests. See `tests/fixtures/README.md`.
+### Success-path regression guard
+
+`tests/integration/success-path.test.mjs` is the test that should have
+existed since v0.1.0. It asserts **positive evidence** that the pipeline
+produced a real face-tracked render — not just that exit code was 0:
+
+- Ultraface detector ran (`detector === 'onnxruntime@ultraface-rfb-320'`,
+  not a fallback variant), framesWithFace > 80 % of framesProcessed
+- PFLD landmarks populated 68/face, mouth-y stddev > 1 px (proves
+  per-frame inference, not cache)
+- Tracker flip rate ≤ 1.0/s
+- Crop center stddev > 5 px in `samples[]`
+- `cf-ffmpeg reframe-animated` produces a 1080×1920 mp4 whose 3 sampled
+  frames have 3 distinct sha256 hashes (the CR-2 regression guard)
+
+The test skips cleanly when fixtures or ONNX models aren't installed
+locally, so `npm test` on a fresh checkout stays green; the gate is on
+releases. Run `npm test` before any tag.
 
 ## Roadmap
 
