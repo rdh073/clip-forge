@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -118,6 +118,68 @@ test('cf-reframe --target-aspect 1:1 produces square target dims', { skip: !HAS_
   const out = JSON.parse(readFileSync(OUT_PATH, 'utf-8'));
   assert.equal(out.target_w, out.target_h, 'square target → equal w and h');
   try { rmSync(OUT_PATH); } catch {}
+});
+
+test('cf-reframe --speaker-map honors explicit mapping end-to-end', { skip: !HAS_FFMPEG, timeout: 30_000 }, () => {
+  ensureDemoVideo();
+  // Synthesize a minimal transcript that ActiveSpeakerTracker can read.
+  const txPath = '/tmp/cf-reframe-itest-tx.json';
+  writeFileSync(txPath, JSON.stringify({
+    version: 1, engine: 'test', language: 'en', duration_s: 5,
+    speakers: [{ id: 0, label: 'A' }, { id: 1, label: 'B' }],
+    words: [
+      { w: 'hello', start_ms: 0,    end_ms: 1500, speaker: 0, confidence: 1.0 },
+      { w: 'world', start_ms: 2000, end_ms: 4500, speaker: 1, confidence: 1.0 },
+    ],
+    sentences: [],
+  }));
+
+  const r = spawnSync('node', [
+    resolve(PLUGIN_ROOT, 'bin/cf-reframe'),
+    DEMO_PATH,
+    '--output', OUT_PATH,
+    '--sample-fps', '4',
+    '--transcript', txPath,
+    '--speaker-map', '0:left,1:right',
+  ], { encoding: 'utf-8' });
+  assert.equal(r.status, 0, r.stderr);
+
+  const out = JSON.parse(readFileSync(OUT_PATH, 'utf-8'));
+  // The output should record what was parsed even though the testsrc video
+  // triggers the no-face fallback. This proves the flag plumbing works
+  // end-to-end (parse → tracker → output metadata).
+  assert.ok(out.speaker_map, 'speaker_map should be in output');
+  assert.deepEqual(out.speaker_map['0'], { x: 0.25, y: 0.5 }, 'speaker 0 → left slot');
+  assert.deepEqual(out.speaker_map['1'], { x: 0.75, y: 0.5 }, 'speaker 1 → right slot');
+
+  try { rmSync(OUT_PATH); rmSync(txPath); } catch {}
+});
+
+test('cf-reframe --speaker-map with numeric form is parsed correctly', { skip: !HAS_FFMPEG, timeout: 30_000 }, () => {
+  ensureDemoVideo();
+  const txPath = '/tmp/cf-reframe-itest-tx2.json';
+  writeFileSync(txPath, JSON.stringify({
+    version: 1, engine: 'test', language: 'en', duration_s: 5,
+    speakers: [{ id: 0, label: 'A' }],
+    words: [{ w: 'hi', start_ms: 0, end_ms: 1000, speaker: 0, confidence: 1.0 }],
+    sentences: [],
+  }));
+
+  const r = spawnSync('node', [
+    resolve(PLUGIN_ROOT, 'bin/cf-reframe'),
+    DEMO_PATH,
+    '--output', OUT_PATH,
+    '--sample-fps', '4',
+    '--transcript', txPath,
+    '--speaker-map', '0:0.3,0.4',
+  ], { encoding: 'utf-8' });
+  assert.equal(r.status, 0, r.stderr);
+
+  const out = JSON.parse(readFileSync(OUT_PATH, 'utf-8'));
+  assert.ok(out.speaker_map);
+  assert.equal(out.speaker_map['0'].x, 0.3);
+  assert.equal(out.speaker_map['0'].y, 0.4);
+  try { rmSync(OUT_PATH); rmSync(txPath); } catch {}
 });
 
 test('cf-reframe --fallback topcrop offsets vertical center upward', { skip: !HAS_FFMPEG, timeout: 30_000 }, () => {

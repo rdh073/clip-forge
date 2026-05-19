@@ -133,6 +133,26 @@ test('tracker: empty faces → no chosen face, currentId preserved', () => {
   assert.equal(tracker._currentId, before);
 });
 
+test('tracker: no-audio defaults use mouth 0.6 / central 0.25 / confidence 0.15', () => {
+  // Construct with no transcript/speakerMap and no explicit weights — should
+  // pick the hand-tuned no-audio defaults, not naively renormalized values.
+  const t = new ActiveSpeakerTracker({});
+  assert.equal(t.weights.audio, 0);
+  assert.equal(t.weights.mouth, 0.6);
+  assert.equal(t.weights.central, 0.25);
+  assert.equal(t.weights.confidence, 0.15);
+});
+
+test('tracker: with transcript + speakerMap uses audio 0.3 / mouth 0.5 / central 0.1 / confidence 0.1', () => {
+  const transcript = { words: [{ w: 'x', start_ms: 0, end_ms: 1000, speaker: 0 }] };
+  const speakerMap = { 0: { x: 0.5, y: 0.5 } };
+  const t = new ActiveSpeakerTracker({ transcript, speakerMap });
+  assert.equal(t.weights.audio, 0.3);
+  assert.equal(t.weights.mouth, 0.5);
+  assert.equal(t.weights.central, 0.1);
+  assert.equal(t.weights.confidence, 0.1);
+});
+
 test('tracker: deterministic with fixed inputs + weights', () => {
   // Same inputs, fresh tracker → same outputs every time.
   const make = () => new ActiveSpeakerTracker({

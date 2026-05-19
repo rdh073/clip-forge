@@ -14,7 +14,13 @@
 //   tracker.pickActiveFace(faces, { tMs, frameWidth, frameHeight }) → Face | null
 //   tracker.reset()
 
+// When a transcript + speakerMap are both supplied the audio cue contributes
+// 30% of the score. When either is absent we don't fall through to a naive
+// renormalization (which over-weights mouth motion) — instead we use a
+// hand-tuned set that leans more on centrality/confidence, since mouth motion
+// alone tends to be noisy in talking-head clips.
 const DEFAULT_WEIGHTS = { audio: 0.3, mouth: 0.5, central: 0.1, confidence: 0.1 };
+const DEFAULT_NO_AUDIO_WEIGHTS = { audio: 0, mouth: 0.6, central: 0.25, confidence: 0.15 };
 const DEFAULT_SWITCH_COOLDOWN_MS = 800;
 const DEFAULT_FRAME_LOCK = 24;
 const MOUTH_WINDOW_FRAMES = 10;
@@ -32,7 +38,14 @@ export class ActiveSpeakerTracker {
    *                                      Use `null` to disable audio cue.
    */
   constructor(opts = {}) {
-    this.weights = normalizeWeights({ ...DEFAULT_WEIGHTS, ...(opts.weights || {}) }, !!opts.transcript && !!opts.speakerMap);
+    const audioAvailable = !!opts.transcript && !!opts.speakerMap;
+    if (opts.weights) {
+      // User passed explicit weights — renormalize, zeroing audio if no transcript.
+      this.weights = normalizeWeights({ ...DEFAULT_WEIGHTS, ...opts.weights }, audioAvailable);
+    } else {
+      // No explicit weights — pick the appropriate default set.
+      this.weights = { ...(audioAvailable ? DEFAULT_WEIGHTS : DEFAULT_NO_AUDIO_WEIGHTS) };
+    }
     this.switchCooldownMs = opts.switchCooldownMs ?? DEFAULT_SWITCH_COOLDOWN_MS;
     this.frameLockN = opts.frameLockN ?? DEFAULT_FRAME_LOCK;
     this.disabled = !!opts.disableActiveSpeaker;

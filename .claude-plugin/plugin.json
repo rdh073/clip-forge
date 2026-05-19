@@ -3,9 +3,9 @@
   "description": "Turn long videos into 10+ viral shorts — AI clip detection, auto-reframe, viral captions, render, schedule, publish. All from your terminal.",
   "version": "0.1.0",
   "author": {
-    "name": "xtrzy"
+    "name": "rdh073"
   },
-  "homepage": "https://github.com/xtrzy/clip-forge",
+  "homepage": "https://github.com/rdh073/clip-forge",
   "license": "MIT",
   "keywords": [
     "video",

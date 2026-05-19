@@ -219,29 +219,34 @@ async function collectLeadIn(opts) {
 }
 
 async function detectPath(opts, srcW, srcH, targetW, targetH) {
-  await initDetector({ minConfidence: opts.minConfidence });
-  if (!isDetectorReady()) {
-    return { samples: null, reason: 'detector_unavailable: ' + (getDisabledReason() || 'unknown') };
-  }
-
-  // Resolve speaker map: explicit string | 'auto' (calibrate) | null (no audio cue).
+  // Parse the speaker map + transcript BEFORE initializing the detector so
+  // an early bail (detector unavailable, model missing) still carries this
+  // metadata through to the output — proves the flag was honored even when
+  // we couldn't run real detection.
   let speakerMap = null;
   let transcript = null;
+  let speakerMapWantsAuto = false;
   if (opts.transcript) {
     try { transcript = JSON.parse(readFileSync(opts.transcript, 'utf-8')); }
     catch (e) { jlog(opts, { event: 'warn', msg: 'transcript_load_failed: ' + e.message }); }
   }
-
   if (opts.speakerMap && transcript) {
     const parsed = parseSpeakerMap(opts.speakerMap);
-    if (parsed === 'auto') {
-      jlog(opts, { event: 'calibration_start' });
-      const lead = await collectLeadIn(opts);
-      speakerMap = autoCalibrateSpeakerMap(lead, transcript, srcW, srcH);
-      jlog(opts, { event: 'calibration_done', map: speakerMap });
-    } else if (parsed) {
-      speakerMap = parsed;
-    }
+    if (parsed === 'auto')      speakerMapWantsAuto = true;
+    else if (parsed)            speakerMap = parsed;
+  }
+
+  await initDetector({ minConfidence: opts.minConfidence });
+  if (!isDetectorReady()) {
+    return { samples: null, reason: 'detector_unavailable: ' + (getDisabledReason() || 'unknown'),
+             speakerMap };
+  }
+
+  if (speakerMapWantsAuto) {
+    jlog(opts, { event: 'calibration_start' });
+    const lead = await collectLeadIn(opts);
+    speakerMap = autoCalibrateSpeakerMap(lead, transcript, srcW, srcH);
+    jlog(opts, { event: 'calibration_done', map: speakerMap });
   }
 
   const tracker = new ActiveSpeakerTracker({
@@ -331,11 +336,12 @@ async function detectPath(opts, srcW, srcH, targetW, targetH) {
   }
 
   if (framesProcessed === 0) {
-    return { samples: null, reason: extractorErr ? 'extractor_error: ' + extractorErr : 'no_frames_extracted' };
+    return { samples: null, reason: extractorErr ? 'extractor_error: ' + extractorErr : 'no_frames_extracted',
+             speakerMap };
   }
   if (framesWithFace / framesProcessed < 0.5) {
     return { samples: null, reason: 'low_face_yield: ' + framesWithFace + '/' + framesProcessed,
-             framesProcessed, framesWithFace, framesSlow };
+             framesProcessed, framesWithFace, framesSlow, speakerMap };
   }
   if (!extractorOk) {
     jlog(opts, { event: 'partial_extraction', framesProcessed });
@@ -397,7 +403,6 @@ async function detectPath(opts, srcW, srcH, targetW, targetH) {
           framesSlow: r.framesSlow || 0,
           extractorOk: r.extractorOk !== false,
         };
-        resolvedMap = r.speakerMap || null;
       } else if (r.framesProcessed) {
         // Even when falling back, record the stats — useful for debugging.
         stats = {
@@ -406,6 +411,10 @@ async function detectPath(opts, srcW, srcH, targetW, targetH) {
           framesSlow: r.framesSlow || 0,
         };
       }
+      // Record the parsed/calibrated speaker map regardless of detection outcome
+      // — it documents what was attempted and lets downstream tools verify the
+      // CLI flag was honored.
+      resolvedMap = r.speakerMap || null;
     } catch (e) {
       reason = 'detect_threw: ' + e.message;
     } finally {
