@@ -1,0 +1,17 @@
+{
+  "name": "clip-forge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "install-models": "node bin/install-models.mjs",
+    "test": "node --test --test-reporter=spec bin/lib/*.test.mjs tests/**/*.test.mjs",
+    "verify": "node --test --test-reporter=spec bin/lib/*.test.mjs tests/**/*.test.mjs && claude plugin validate ."
+  },
+  "dependencies": {
+    "@mediapipe/tasks-vision": "^0.10.21"
+  }
+}

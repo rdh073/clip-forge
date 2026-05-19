@@ -6,7 +6,11 @@
 // we don't actually need any of it for this check.
 
 import { execSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const PLUGIN_ROOT = resolve(fileURLToPath(import.meta.url), '../..');
 
 function which(cmd) {
   try {
@@ -37,12 +41,20 @@ const keys = [
   { name: 'IG_APP_ID',        ok: !!process.env.IG_APP_ID,        optional: true,  fallback: 'publish to Reels off'  },
 ];
 
+const modelPath = resolve(PLUGIN_ROOT, 'bin/models/face_detector.tflite');
+const modelOk = existsSync(modelPath) && (() => {
+  try { return statSync(modelPath).size > 100_000; } catch { return false; }
+})();
+
 const lines = [];
 lines.push('🎬 ClipForge preflight');
 for (const b of bins) {
   lines.push(b.ok ? '  ✅ ' + b.name + '  → ' + b.path
                   : '  ❌ ' + b.name + '  → ' + b.hint);
 }
+lines.push(modelOk
+  ? '  ✅ face_detector.tflite present'
+  : '  ⚠  face_detector.tflite missing  (run `node bin/install-models.mjs` for face-tracked reframe; otherwise center-crop fallback is used)');
 for (const k of keys) {
   lines.push(k.ok ? '  ✅ ' + k.name
                   : '  ⚠  ' + k.name + ' unset  (fallback: ' + k.fallback + ')');
