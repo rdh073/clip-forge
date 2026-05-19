@@ -1,5 +1,13 @@
 # 🎬 `clip-forge` — Claude Code Plugin Blueprint
 
+## Defaults
+
+- Face detection: MediaPipe BlazeFace short-range, ~6 fps sampling.
+- Active-speaker scoring weights: audio 0.3 · mouth 0.5 · central 0.1 · confidence 0.1.
+- Switching damper: ≤1 target flip per 0.8 s + 24-frame lock.
+- Target aspect: 9:16 (1080×1920). Override with `--target-aspect W:H`.
+- Pan velocity clamp: 80 source-px/s.
+
 ## Konsep
 
 Karena Claude Code adalah **terminal-based agent**, plugin ini bukan mengganti UI web Opus Clip, tapi memberi creator **workflow CLI yang lebih cepat**:
