@@ -1,29 +1,37 @@
 #!/usr/bin/env node
 // cf-reframe — generates a crop path JSON for converting 16:9 → 9:16.
 //
-// Strategy:
-//   1. Try @mediapipe/tasks-vision if installed. Sample at --fps, detect the
-//      dominant face per frame, Kalman-smooth the center, clamp pan velocity.
-//   2. If MediaPipe is unavailable, fall back to ffmpeg `cropdetect` for
-//      object/content centroid; failing that, emit a center-crop path.
+// Pipeline:
+//   ffmpeg pipe rgb24 → face-detector (MediaPipe) → active-speaker scorer
+//     → Kalman smoother (untouched from v0.1.0) → velocity clamp (untouched)
+//     → crop_path.json (schema v2, backward-compatible with cf-ffmpeg)
 //
-// The output is a JSON file the renderer's `cf-ffmpeg render` consumes —
-// always emits a valid crop_path.json so the pipeline never breaks.
+// Graceful degradation: every failure mode (model missing, MediaPipe import
+// fail, detector crash, all-frames-no-face) falls through to center-crop and
+// records the reason in the output metadata. Exit code 0 in all cases except
+// invalid CLI args — the renderer must never break because reframe couldn't
+// detect faces.
 
 import { spawnSync } from 'node:child_process';
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 
+import { extractFrames } from './lib/frame-extractor.mjs';
+import { initDetector, detectFaces, closeDetector, isDetectorReady, getDisabledReason } from './lib/face-detector.mjs';
+import { ActiveSpeakerTracker, parseSpeakerMap, autoCalibrateSpeakerMap } from './lib/active-speaker.mjs';
+
+const TARGET_W = 1080, TARGET_H = 1920;
+
 function parseArgs(argv) {
-  const out = { fps: 4, mode: 'face', maxPanPxS: 80 };
+  const out = { fps: 6, mode: 'face', maxPanPxS: 80 };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--in')          out.in = argv[++i];
-    else if (a === '--out')    out.out = argv[++i];
-    else if (a === '--start-ms') out.startMs = parseInt(argv[++i], 10);
-    else if (a === '--end-ms')   out.endMs   = parseInt(argv[++i], 10);
-    else if (a === '--mode')     out.mode    = argv[++i];
-    else if (a === '--fps')      out.fps     = parseFloat(argv[++i]);
+    if (a === '--in')                out.in = argv[++i];
+    else if (a === '--out')          out.out = argv[++i];
+    else if (a === '--start-ms')     out.startMs = parseInt(argv[++i], 10);
+    else if (a === '--end-ms')       out.endMs   = parseInt(argv[++i], 10);
+    else if (a === '--mode')         out.mode    = argv[++i];
+    else if (a === '--fps')          out.fps     = parseFloat(argv[++i]);
     else if (a === '--max-pan-px-s') out.maxPanPxS = parseFloat(argv[++i]);
   }
   return out;
@@ -37,10 +45,12 @@ function die(msg, code = 1) {
 function probe(file) {
   const r = spawnSync('ffprobe', ['-v', 'error', '-print_format', 'json',
                                    '-show_streams', '-show_format', file]);
-  if (r.status !== 0) die('ffprobe failed: ' + r.stderr.toString());
-  const data = JSON.parse(r.stdout.toString());
-  const v = (data.streams || []).find((s) => s.codec_type === 'video') || {};
-  return { width: v.width || 0, height: v.height || 0 };
+  if (r.status !== 0) return null;
+  try {
+    const data = JSON.parse(r.stdout.toString());
+    const v = (data.streams || []).find((s) => s.codec_type === 'video') || {};
+    return { width: v.width || 0, height: v.height || 0 };
+  } catch { return null; }
 }
 
 function clampVelocity(samples, maxPanPxS) {
@@ -61,7 +71,7 @@ function clampVelocity(samples, maxPanPxS) {
 }
 
 function kalman1d(values, q = 1e-3, r = 1e-1) {
-  // Simple 1D Kalman smoother on a series of values.
+  // Simple 1D Kalman smoother on a series of values. UNCHANGED from v0.1.0.
   const out = new Array(values.length);
   let x = values[0]; let p = 1;
   for (let i = 0; i < values.length; i++) {
@@ -74,88 +84,144 @@ function kalman1d(values, q = 1e-3, r = 1e-1) {
   return out;
 }
 
-async function tryMediapipe() {
-  try {
-    const mod = await import('@mediapipe/tasks-vision');
-    return mod;
-  } catch {
-    return null;
-  }
-}
-
-async function detectFaceCenters(opts, srcW, srcH) {
-  const mp = await tryMediapipe();
-  if (!mp) {
-    return { samples: null, reason: '@mediapipe/tasks-vision not installed' };
-  }
-  // The actual real detection involves: extracting frames at --fps via ffmpeg,
-  // running FaceLandmarker per frame, picking the dominant face, recording cx/cy.
-  // Implementing the full pipeline here would be ~150 lines and depends on
-  // the MediaPipe model file being preset. For the initial release we mark
-  // this path as "available but unused" and fall through to the safe
-  // center-crop output. Replace this block with real detection when ready.
-  return { samples: null, reason: 'mediapipe available but detection path not wired in 0.1.0' };
-}
-
-function centerCropPath(opts, srcW, srcH) {
-  const targetW = 1080, targetH = 1920;
-  const scale = srcH / (targetH * (targetW / targetH) / (srcW / srcH));
-  // Simpler: pick scale so source crop height fills target height.
-  const scaleHFit = srcH / targetH;
-  const stepMs = Math.max(100, Math.round(1000 / opts.fps));
+function centerCropSamples(opts, srcW, srcH, fallbackReason) {
+  const scaleHFit = srcH / TARGET_H;
+  const stepMs = Math.max(50, Math.round(1000 / opts.fps));
   const samples = [];
   for (let t = 0; t <= (opts.endMs - opts.startMs); t += stepMs) {
     samples.push({ t_ms: t, cx: Math.floor(srcW / 2), cy: Math.floor(srcH / 2),
                    scale: +scaleHFit.toFixed(3), letterbox: false });
   }
-  return samples;
+  return { samples, fallbackReason };
+}
+
+async function detectPath(opts, srcW, srcH) {
+  // Init detector; if it fails, mark for fallback.
+  await initDetector({});
+  if (!isDetectorReady()) {
+    return { samples: null, reason: 'detector_unavailable: ' + (getDisabledReason() || 'unknown') };
+  }
+
+  const tracker = new ActiveSpeakerTracker({});
+
+  const raw = []; // collected {t_ms, cx, cy} from active-speaker
+  let framesProcessed = 0;
+  let framesWithFace = 0;
+  let lastGood = null;
+
+  for await (const frame of extractFrames({
+    input: opts.in,
+    sampleFps: opts.fps,
+    startMs: opts.startMs,
+    endMs: opts.endMs,
+  })) {
+    framesProcessed++;
+    let faces = [];
+    try {
+      faces = detectFaces(frame.rgb, frame.width, frame.height, frame.tMs,
+                          frame.sourceWidth, frame.sourceHeight);
+    } catch {
+      faces = [];
+    }
+
+    const ctx = { tMs: frame.tMs, frameWidth: frame.sourceWidth, frameHeight: frame.sourceHeight };
+    const pick = tracker.pickActiveFace(faces, ctx);
+
+    if (pick.face) {
+      framesWithFace++;
+      lastGood = { cx: pick.face.x, cy: pick.face.y };
+      raw.push({ t_ms: frame.tMs, cx: pick.face.x, cy: pick.face.y });
+    } else if (lastGood) {
+      // Coast on last known good (Kalman will smooth across gaps).
+      raw.push({ t_ms: frame.tMs, cx: lastGood.cx, cy: lastGood.cy });
+    } else {
+      // No face yet at all — drop a center placeholder; Kalman will pick it up.
+      raw.push({ t_ms: frame.tMs, cx: srcW / 2, cy: srcH / 2 });
+    }
+  }
+
+  if (framesProcessed === 0) {
+    return { samples: null, reason: 'no_frames_extracted' };
+  }
+  if (framesWithFace / framesProcessed < 0.5) {
+    return { samples: null, reason: 'low_face_yield: ' + framesWithFace + '/' + framesProcessed };
+  }
+
+  // Smooth + clamp using EXISTING Kalman + velocity clamp.
+  const cxs = kalman1d(raw.map((r) => r.cx));
+  const cys = kalman1d(raw.map((r) => r.cy));
+  const scaleHFit = srcH / TARGET_H;
+  let samples = raw.map((r, i) => ({
+    t_ms: r.t_ms,
+    cx: Math.round(cxs[i]),
+    cy: Math.round(cys[i]),
+    scale: +scaleHFit.toFixed(3),
+    letterbox: false,
+  }));
+  samples = clampVelocity(samples, opts.maxPanPxS);
+
+  return { samples, framesProcessed, framesWithFace };
 }
 
 (async () => {
   const opts = parseArgs(process.argv.slice(2));
   if (!opts.in || !opts.out || opts.startMs == null || opts.endMs == null) {
-    die('usage: cf-reframe --in <mp4> --out <json> --start-ms N --end-ms N [--mode face|object|center] [--fps 4] [--max-pan-px-s 80]');
+    die('usage: cf-reframe --in <mp4> --out <json> --start-ms N --end-ms N [--mode face|object|center] [--fps 6] [--max-pan-px-s 80]');
   }
 
-  const { width: srcW, height: srcH } = probe(opts.in);
-  if (!srcW || !srcH) die('could not probe ' + opts.in);
+  const dims = probe(opts.in);
+  if (!dims || !dims.width || !dims.height) die('could not probe ' + opts.in);
+  const { width: srcW, height: srcH } = dims;
 
   let samples = null;
   let fallback = false;
   let reason = null;
+  let detectorLabel = 'mediapipe@blazeface-short';
+  let stats = null;
 
   if (opts.mode === 'face') {
-    const r = await detectFaceCenters(opts, srcW, srcH);
-    samples = r.samples;
-    reason = r.reason;
+    try {
+      const r = await detectPath(opts, srcW, srcH);
+      samples = r.samples;
+      reason = r.reason;
+      stats = { framesProcessed: r.framesProcessed, framesWithFace: r.framesWithFace };
+    } catch (e) {
+      reason = 'detect_threw: ' + e.message;
+    } finally {
+      closeDetector();
+    }
+  } else {
+    reason = 'mode=' + opts.mode + ' (face detection skipped)';
   }
 
   if (!samples) {
     fallback = true;
-    samples = centerCropPath(opts, srcW, srcH);
-  } else {
-    // Smooth + clamp
-    const cxs = kalman1d(samples.map((s) => s.cx));
-    const cys = kalman1d(samples.map((s) => s.cy));
-    samples = samples.map((s, i) => ({ ...s, cx: Math.round(cxs[i]), cy: Math.round(cys[i]) }));
-    samples = clampVelocity(samples, opts.maxPanPxS);
+    const cc = centerCropSamples(opts, srcW, srcH, reason);
+    samples = cc.samples;
+    detectorLabel = 'center-fallback';
   }
 
   const result = {
-    version: 1,
+    version: 2,
     clip_id: null,
     source_w: srcW,
     source_h: srcH,
-    target_w: 1080,
-    target_h: 1920,
+    target_w: TARGET_W,
+    target_h: TARGET_H,
     mode: fallback ? 'center' : opts.mode,
+    detector: detectorLabel,
     samples,
     interp: 'linear',
     fallback_used: fallback,
     fallback_reason: reason,
+    stats: stats || undefined,
   };
 
   mkdirSync(dirname(opts.out), { recursive: true });
   writeFileSync(opts.out, JSON.stringify(result, null, 2));
-  process.stdout.write(JSON.stringify({ event: 'done', samples: samples.length, fallback }) + '\n');
+  process.stdout.write(JSON.stringify({
+    event: 'done', samples: samples.length, fallback, detector: detectorLabel,
+    framesProcessed: stats ? stats.framesProcessed : 0,
+    framesWithFace: stats ? stats.framesWithFace : 0,
+  }) + '\n');
 })();
