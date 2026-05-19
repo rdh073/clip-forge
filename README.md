@@ -16,6 +16,28 @@ captions, B-roll, and a music bed — ready to publish to TikTok, Reels, Shorts,
 
 ---
 
+## ⚠️ Status (v0.1.2)
+
+Face-tracked reframe is **not functional in Node.js** in this release.
+Our chosen detector library ([`@mediapipe/tasks-vision`](https://www.npmjs.com/package/@mediapipe/tasks-vision))
+is browser-only — it mounts DOM nodes during initialization that don't exist
+in a Node process. Every `cf-reframe` invocation falls through to a
+**static center-crop**, regardless of model presence, flags, or input.
+
+This is documented here so the README matches what the code actually does.
+Real face-tracked reframe lands in **v0.2.0** after a swap to a Node-native
+detector — see [docs/ROADMAP.md](docs/ROADMAP.md).
+
+Other pipeline stages function as documented: transcribe, clip-scout,
+captions, B-roll, music, render, publish, schedule, analytics. The
+fallback crop is sensible (center or top-third per `--fallback`) and the
+renderer still produces a valid 9:16 mp4 — you just don't get face tracking.
+
+See [docs/REVIEW.md](docs/REVIEW.md) for the full v0.1.1 self-audit that
+surfaced this.
+
+---
+
 ## Requirements
 
 | Dependency      | Minimum | Notes                                                  |
@@ -91,7 +113,7 @@ Pass `--yolo` to skip every approval gate and ship 10 clips unattended:
 | `/clip-forge:import`       | Pull source from local file, YouTube/Vimeo, or Drive/Dropbox |
 | `/clip-forge:transcribe`   | Word-timed transcript via Deepgram (or local Whisper) |
 | `/clip-forge:clip`         | Calls clip-scout agent to pick up to 15 viral moments |
-| `/clip-forge:reframe`      | Face-tracked 16:9 → 9:16 crop path with Kalman smoothing |
+| `/clip-forge:reframe`      | 16:9 → 9:16 crop path (face tracking **deferred to v0.2.0**, center-crop today) |
 | `/clip-forge:caption`      | Word-timed captions in your default style → `.ass` file |
 | `/clip-forge:broll`        | Pexels stock cutaways matched to each sentence |
 | `/clip-forge:music`        | Royalty-free music bed with auto-ducking under speech |
@@ -151,12 +173,18 @@ Pass `--yolo` to skip every approval gate and ship 10 clips unattended:
 
 ## Reframe & active speaker
 
+> **v0.1.2 reality check:** the MediaPipe path described below is **wired
+> but disabled** in this release — see [Status](#-status-v012). Every
+> invocation falls through to center-crop. The pipeline shape is preserved
+> so v0.2.0 can drop in a Node-native detector with minimal churn. Sections
+> below describe the *target* design.
+
 `bin/cf-reframe` does the 16:9 → 9:16 cropping. Under the hood it pipes
 downsampled RGB frames out of ffmpeg, runs MediaPipe **BlazeFace
-short-range** for detection, applies a weighted active-speaker scorer over
-four cues (audio, mouth motion, centrality, confidence), and feeds the
-chosen face center into a Kalman smoother + velocity clamp before writing
-the crop path.
+short-range** for detection *[v0.2.0]*, applies a weighted active-speaker
+scorer over four cues *[v0.2.0]* (audio, mouth motion, centrality,
+confidence), and feeds the chosen face center into a Kalman smoother +
+velocity clamp before writing the crop path.
 
 ### One-time setup
 
@@ -259,6 +287,14 @@ your-project/
 │   └── edit.json                    # render manifest (triggers hook)
 └── renders/<slug>/<clip-id>.mp4     # final 9:16 export
 ```
+
+## Engineering
+
+- [docs/REVIEW.md](docs/REVIEW.md) — v0.1.1 critical self-audit (the
+  document that surfaced the v0.1.2 truth disclosure).
+- [docs/ROADMAP.md](docs/ROADMAP.md) — what's planned for v0.2.0 / v0.3.0.
+- [docs/blueprint.md](docs/blueprint.md) — original design notes.
+- [CHANGELOG.md](CHANGELOG.md) — release-by-release detail.
 
 ## Development
 

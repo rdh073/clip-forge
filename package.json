@@ -10,7 +10,8 @@
     "install-models": "node bin/install-models.mjs",
     "build-fixtures": "node tests/fixtures/build-fixtures.mjs",
     "test": "node --test --test-reporter=spec",
-    "verify": "node --test --test-reporter=spec && claude plugin validate ."
+    "verify": "node --test --test-reporter=spec && claude plugin validate .",
+    "bump": "node scripts/bump-version.mjs"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^0.10.21"

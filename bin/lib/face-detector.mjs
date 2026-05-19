@@ -18,6 +18,23 @@
 //   keypoints: { right_eye, left_eye, nose, mouth, right_ear, left_ear } each {x,y} in SOURCE coords
 // }
 
+// v0.1.2 STATUS — known broken in Node:
+//
+// @mediapipe/tasks-vision is a browser-first SDK. It mounts DOM nodes
+// (document.createElement('canvas'), document.body.appendChild, ...) during
+// FaceDetector.createFromOptions() with no Node-detection branches. Shimming
+// is whack-a-mole and was abandoned in favour of a library swap planned for
+// v0.2.0 (see docs/ROADMAP.md).
+//
+// This module is kept so cf-reframe's pipeline shape stays intact, but
+// initDetector() ALWAYS marks the detector disabled with reason
+// "node_unsupported". Every cf-reframe invocation therefore falls back to
+// center-crop with an explicit reason in crop_path.json.fallback_reason.
+//
+// The pure-JS pieces in this file (rgbToRgba, mapKeypoints, coordinate
+// up-projection) will be reused when v0.2.0 swaps in @vladmandic/human or
+// similar.
+
 import { existsSync, statSync, readFileSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -42,6 +59,9 @@ export async function initDetector(opts = {}) {
   if (_initPromise) return _initPromise;
 
   _initPromise = (async () => {
+    // v0.1.2: hard-disable in Node — see file header. We still validate the
+    // model file exists so users get a useful warning when they haven't run
+    // install-models, but we don't attempt to construct the MediaPipe detector.
     const modelPath = opts.modelPath || resolve(PLUGIN_ROOT, 'bin/models/face_detector.tflite');
     if (!existsSync(modelPath) || statSync(modelPath).size < 100_000) {
       _disabled = true;
@@ -49,46 +69,9 @@ export async function initDetector(opts = {}) {
       return null;
     }
 
-    let mp;
-    try {
-      mp = await import('@mediapipe/tasks-vision');
-    } catch (e) {
-      _disabled = true;
-      _disabledReason = 'mediapipe_import_failed: ' + e.message + ' — run `npm install` in the plugin root';
-      return null;
-    }
-
-    let wasmDir;
-    try {
-      // Resolve the wasm fileset path inside the installed package.
-      const pkgRoot = dirname(fileURLToPath(import.meta.resolve('@mediapipe/tasks-vision/package.json')));
-      wasmDir = pathToFileURL(join(pkgRoot, 'wasm')).href;
-    } catch (e) {
-      _disabled = true;
-      _disabledReason = 'wasm_path_unresolved: ' + e.message;
-      return null;
-    }
-
-    let detector;
-    try {
-      const vision = await mp.FilesetResolver.forVisionTasks(wasmDir);
-      detector = await mp.FaceDetector.createFromOptions(vision, {
-        baseOptions: {
-          modelAssetBuffer: readFileSync(modelPath),
-          delegate: 'CPU',
-        },
-        runningMode: opts.runningMode || 'VIDEO',
-        minDetectionConfidence: opts.minConfidence ?? 0.5,
-        minSuppressionThreshold: 0.3,
-      });
-    } catch (e) {
-      _disabled = true;
-      _disabledReason = 'detector_create_failed: ' + e.message;
-      return null;
-    }
-
-    _detector = detector;
-    return _detector;
+    _disabled = true;
+    _disabledReason = 'mediapipe_not_supported_in_node: @mediapipe/tasks-vision is browser-only and currently does not run in Node. v0.2.0 swaps to a Node-compatible detector — see docs/ROADMAP.md.';
+    return null;
   })();
 
   const r = await _initPromise;

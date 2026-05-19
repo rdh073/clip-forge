@@ -80,11 +80,37 @@ test('cf-reframe end-to-end on demo video (skipped when ffmpeg missing)', { skip
     assert.ok(s.cy >= 0 && s.cy <= out.source_h, 'cy must be within source bounds');
   }
 
-  // testsrc has no faces, so fallback should kick in.
-  assert.equal(out.fallback_used, true, 'expected center/topcrop fallback on testsrc input');
-  assert.match(out.detector, /(fallback|mediapipe)/);
+  // v0.1.2 reality: face detection does not work in Node (MediaPipe is
+  // browser-only). EVERY invocation falls back to center-crop. Assert that
+  // explicitly so the test exercises what users actually get.
+  assert.equal(out.fallback_used, true, 'v0.1.2: fallback is the actual shipped behavior');
+  assert.equal(out.detector, 'center-fallback', 'detector field should record the fallback variant');
+  assert.ok(
+    typeof out.fallback_reason === 'string' && out.fallback_reason.includes('mediapipe_not_supported_in_node'),
+    'fallback_reason should surface the documented v0.1.2 status; got: ' + out.fallback_reason
+  );
 
   // Cleanup
+  try { rmSync(OUT_PATH); } catch {}
+});
+
+test('v0.1.2 reality: face detection is disabled, fallback_reason surfaces it', { skip: !HAS_FFMPEG, timeout: 30_000 }, () => {
+  ensureDemoVideo();
+  const r = spawnSync('node', [
+    resolve(PLUGIN_ROOT, 'bin/cf-reframe'),
+    DEMO_PATH,
+    '--output', OUT_PATH,
+    '--sample-fps', '4',
+  ], { encoding: 'utf-8' });
+  assert.equal(r.status, 0, r.stderr);
+  const out = JSON.parse(readFileSync(OUT_PATH, 'utf-8'));
+  // Reality-aligned assertions — these match what cf-reframe actually does
+  // in this release, not what we wish it did.
+  assert.equal(out.fallback_used, true);
+  assert.ok(out.fallback_reason.includes('mediapipe_not_supported_in_node'),
+    'fallback_reason should disclose the MediaPipe / Node mismatch; got: ' + out.fallback_reason);
+  assert.ok(out.fallback_reason.includes('v0.2.0'),
+    'fallback_reason should point users to the roadmap fix');
   try { rmSync(OUT_PATH); } catch {}
 });
 

@@ -5,6 +5,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **CR-4:** version drift across `plugin.json`, `package.json`,
+  `marketplace.json`, and git tags. New `scripts/bump-version.mjs`
+  enforces single-source-of-truth bumping with working-tree-clean,
+  `npm test`, `claude plugin validate .`, and CI-status guards.
+- **CR-3:** dropped the fictional sha256 check in `bin/install-models.mjs`
+  that printed a misleading "mismatch" warning on every install.
+
+### Documented
+
+- **README ⚠ Status (v0.1.2) section** discloses that face-tracked reframe
+  does not function in Node — `@mediapipe/tasks-vision` is browser-only.
+  Every `cf-reframe` invocation falls through to static center-crop. This
+  was technically true in v0.1.0 and v0.1.1; the README + CHANGELOG misled.
+- `bin/lib/face-detector.mjs` now hard-disables detector init with reason
+  `mediapipe_not_supported_in_node`, surfaced in
+  `crop_path.json.fallback_reason`.
+- New `docs/ROADMAP.md` tracks v0.2.0 (library swap, animated crop, real
+  success-path test), v0.2.x stability, v0.3.0 polish, v0.4.0 OAuth.
+- `docs/REVIEW.md` self-audit (from v0.1.1) linked from README §Engineering.
+- Integration tests rewritten to assert the *real* behaviour: every
+  invocation lands in fallback with `mediapipe_not_supported_in_node` in
+  `fallback_reason`. Reality-aligned, not aspirational.
+- `CONTRIBUTING.md` documents the new release process: `npm run bump <kind>`.
+
+### Not fixed in this patch
+
+- **CR-1, CR-2, CR-5** require a library swap and renderer rewrite — out of
+  scope for a 0.0.x patch. See `docs/ROADMAP.md` v0.2.0.
+
 ## [0.1.1] - 2026-05-20
 
 ### Added

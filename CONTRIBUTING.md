@@ -59,6 +59,38 @@ Open a [GitHub Discussion](https://github.com/rdh073/clip-forge/discussions)
 instead of an issue. Issues are for bugs and concrete feature requests
 with a clear definition of done.
 
+## Release process
+
+Maintainers cut releases via:
+
+```bash
+npm run bump <patch|minor|major>     # 0.1.1 → 0.1.2 / 0.2.0 / 1.0.0
+# or pin an explicit version:
+npm run bump 0.1.5
+```
+
+This single command:
+
+1. **Refuses** if the working tree is dirty, `npm test` fails,
+   `claude plugin validate .` fails, or CI on the current commit is not
+   green (when `gh` + a remote are available).
+2. Updates the `version` field in `.claude-plugin/plugin.json`,
+   `package.json`, and `marketplace.json` — all in lockstep, so CR-4
+   (version drift) can't recur.
+3. Moves the **`[Unreleased]`** entries in `CHANGELOG.md` into a new
+   `[<version>] - <today>` section.
+4. Creates the bump commit (`chore: bump version to X.Y.Z`) and an
+   annotated git tag (`vX.Y.Z`) whose body is the changelog section.
+
+Nothing is pushed — the script prints the exact next step:
+
+```text
+git push origin master vX.Y.Z
+```
+
+After pushing, create the GitHub Release from the new tag (pre-release
+flag for any 0.x build).
+
 ## License
 
 By submitting a contribution you agree it ships under the project's

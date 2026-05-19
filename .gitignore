@@ -16,6 +16,7 @@ pnpm-lock.yaml
 
 # MediaPipe models (downloaded via `node bin/install-models.mjs`)
 bin/models/
+bin/wasm/
 
 # Debug output from cf-reframe --debug
 debug/
