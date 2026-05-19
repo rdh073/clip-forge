@@ -8,8 +8,9 @@
   },
   "scripts": {
     "install-models": "node bin/install-models.mjs",
-    "test": "node --test --test-reporter=spec bin/lib/*.test.mjs tests/**/*.test.mjs",
-    "verify": "node --test --test-reporter=spec bin/lib/*.test.mjs tests/**/*.test.mjs && claude plugin validate ."
+    "build-fixtures": "node tests/fixtures/build-fixtures.mjs",
+    "test": "node --test --test-reporter=spec",
+    "verify": "node --test --test-reporter=spec && claude plugin validate ."
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^0.10.21"
