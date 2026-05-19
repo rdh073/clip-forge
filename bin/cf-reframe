@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// cf-reframe — generates a crop path JSON for converting 16:9 → 9:16.
+// cf-reframe — generates a crop path JSON for converting 16:9 → 9:16 (or any
+// portrait/square aspect ratio).
 //
 // Pipeline:
 //   ffmpeg pipe rgb24 → face-detector (MediaPipe) → active-speaker scorer
@@ -11,35 +12,126 @@
 // records the reason in the output metadata. Exit code 0 in all cases except
 // invalid CLI args — the renderer must never break because reframe couldn't
 // detect faces.
+//
+// CLI:
+//   cf-reframe <source.mp4> --output <crop.json>
+//   cf-reframe --in <source.mp4> --out <crop.json>   (v0.1.0 form, still works)
+//
+// See --help for the full flag list.
 
 import { spawnSync } from 'node:child_process';
 import { writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, resolve as resolvePath } from 'node:path';
 
 import { extractFrames } from './lib/frame-extractor.mjs';
 import { initDetector, detectFaces, closeDetector, isDetectorReady, getDisabledReason } from './lib/face-detector.mjs';
 import { ActiveSpeakerTracker, parseSpeakerMap, autoCalibrateSpeakerMap } from './lib/active-speaker.mjs';
+import { writeDebugPpm } from './lib/debug-frame.mjs';
 
-const TARGET_W = 1080, TARGET_H = 1920;
+const TARGET_H_DEFAULT = 1920;
 
 function parseArgs(argv) {
-  const out = { fps: 6, mode: 'face', maxPanPxS: 80 };
+  const out = {
+    in: null,
+    out: null,
+    startMs: null,
+    endMs: null,
+    mode: 'face',
+    fps: 6,
+    maxPanPxS: 80,
+    targetAspect: '9:16',
+    minConfidence: 0.5,
+    weights: null,           // null → defaults in ActiveSpeakerTracker
+    noActiveSpeaker: false,
+    fallbackMode: 'center',  // center | topcrop
+    debug: false,
+    jsonLogs: false,
+    speakerMap: null,        // raw string; parsed later
+    transcript: null,        // path
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--in')                out.in = argv[++i];
-    else if (a === '--out')          out.out = argv[++i];
-    else if (a === '--start-ms')     out.startMs = parseInt(argv[++i], 10);
-    else if (a === '--end-ms')       out.endMs   = parseInt(argv[++i], 10);
-    else if (a === '--mode')         out.mode    = argv[++i];
-    else if (a === '--fps')          out.fps     = parseFloat(argv[++i]);
-    else if (a === '--max-pan-px-s') out.maxPanPxS = parseFloat(argv[++i]);
+    if (a === '--help' || a === '-h') { printHelp(); process.exit(0); }
+    else if (a === '--in')                out.in = argv[++i];
+    else if (a === '--out')               out.out = argv[++i];
+    else if (a === '--output')            out.out = argv[++i];
+    else if (a === '--start-ms')          out.startMs = parseInt(argv[++i], 10);
+    else if (a === '--end-ms')            out.endMs   = parseInt(argv[++i], 10);
+    else if (a === '--mode')              out.mode    = argv[++i];
+    else if (a === '--fps')               out.fps     = parseFloat(argv[++i]);
+    else if (a === '--sample-fps')        out.fps     = parseFloat(argv[++i]);
+    else if (a === '--max-pan-px-s')      out.maxPanPxS = parseFloat(argv[++i]);
+    else if (a === '--target-aspect')     out.targetAspect = argv[++i];
+    else if (a === '--min-confidence')    out.minConfidence = parseFloat(argv[++i]);
+    else if (a === '--weights')           out.weights = parseWeights(argv[++i]);
+    else if (a === '--no-active-speaker') out.noActiveSpeaker = true;
+    else if (a === '--fallback')          out.fallbackMode = argv[++i];
+    else if (a === '--debug')             out.debug = true;
+    else if (a === '--json-logs')         out.jsonLogs = true;
+    else if (a === '--speaker-map')       out.speakerMap = argv[++i];
+    else if (a === '--transcript')        out.transcript = argv[++i];
+    else if (!a.startsWith('--') && !out.in) out.in = a; // positional source
+    else die('unknown flag: ' + a);
   }
   return out;
+}
+
+function parseWeights(spec) {
+  const parts = spec.split(',').map((s) => parseFloat(s.trim()));
+  if (parts.length !== 4 || parts.some((n) => Number.isNaN(n))) {
+    die('--weights expects 4 comma-separated floats: audio,mouth,central,confidence');
+  }
+  return { audio: parts[0], mouth: parts[1], central: parts[2], confidence: parts[3] };
+}
+
+function parseAspect(spec) {
+  const m = String(spec || '').match(/^(\d+):(\d+)$/);
+  if (!m) die('--target-aspect must be W:H (got ' + spec + ')');
+  return { w: parseInt(m[1], 10), h: parseInt(m[2], 10) };
 }
 
 function die(msg, code = 1) {
   process.stderr.write('cf-reframe: ' + msg + '\n');
   process.exit(code);
+}
+
+function printHelp() {
+  process.stdout.write(`cf-reframe — 16:9 → 9:16 face-tracked crop path generator
+
+usage:
+  cf-reframe <source.mp4> --output <crop.json> [flags]
+  cf-reframe --in <source.mp4> --out <crop.json> [flags]    (v0.1.0 form)
+
+source flags:
+  --start-ms N              clip start in source ms (default: 0)
+  --end-ms N                clip end in source ms (default: full duration)
+  --target-aspect W:H       output aspect (default: 9:16)
+
+detection flags:
+  --mode face|object|center default: face
+  --sample-fps N            detect at N fps (default: 6)
+  --min-confidence 0..1     reject detections below this (default: 0.5)
+  --weights a,m,c,k         audio,mouth,central,confidence (default: 0.3,0.5,0.1,0.1)
+  --no-active-speaker       pick highest-confidence face only
+  --speaker-map <spec>      'auto' | '0:left,1:right' | '0:0.25,0.5,1:0.75,0.5'
+  --transcript <path>       transcript.json (enables audio cue)
+
+smoothing flags:
+  --max-pan-px-s N          velocity clamp (default: 80 src px/s)
+
+fallback flags:
+  --fallback center|topcrop default: center
+
+output flags:
+  --output <path>           crop_path.json output (default: ./crop_path.json)
+  --debug                   write ./debug/frame-NNNN.ppm every 30 frames with overlay
+  --json-logs               NDJSON progress on stdout (one line per processed frame)
+
+examples:
+  cf-reframe ./uploads/podcast/source.mp4 --output ./crop.json
+  cf-reframe ./src.mp4 --output ./crop.json --speaker-map auto --transcript ./tx.json
+  cf-reframe ./src.mp4 --output ./crop.json --weights 0.4,0.4,0.1,0.1 --debug
+`);
 }
 
 function probe(file) {
@@ -49,7 +141,12 @@ function probe(file) {
   try {
     const data = JSON.parse(r.stdout.toString());
     const v = (data.streams || []).find((s) => s.codec_type === 'video') || {};
-    return { width: v.width || 0, height: v.height || 0 };
+    const fmt = data.format || {};
+    return {
+      width: v.width || 0,
+      height: v.height || 0,
+      duration_ms: Math.round((parseFloat(fmt.duration || 0) || 0) * 1000),
+    };
   } catch { return null; }
 }
 
@@ -71,7 +168,7 @@ function clampVelocity(samples, maxPanPxS) {
 }
 
 function kalman1d(values, q = 1e-3, r = 1e-1) {
-  // Simple 1D Kalman smoother on a series of values. UNCHANGED from v0.1.0.
+  // Simple 1D Kalman smoother — UNCHANGED from v0.1.0.
   const out = new Array(values.length);
   let x = values[0]; let p = 1;
   for (let i = 0; i < values.length; i++) {
@@ -84,30 +181,83 @@ function kalman1d(values, q = 1e-3, r = 1e-1) {
   return out;
 }
 
-function centerCropSamples(opts, srcW, srcH, fallbackReason) {
-  const scaleHFit = srcH / TARGET_H;
+function fallbackSamples(opts, srcW, srcH, targetW, targetH, reason) {
+  const scaleHFit = srcH / targetH;
   const stepMs = Math.max(50, Math.round(1000 / opts.fps));
   const samples = [];
+  // For 'topcrop', vertical center is shifted up (face usually in upper third).
+  const cy = opts.fallbackMode === 'topcrop' ? Math.floor(srcH * 0.38) : Math.floor(srcH / 2);
   for (let t = 0; t <= (opts.endMs - opts.startMs); t += stepMs) {
-    samples.push({ t_ms: t, cx: Math.floor(srcW / 2), cy: Math.floor(srcH / 2),
+    samples.push({ t_ms: t, cx: Math.floor(srcW / 2), cy,
                    scale: +scaleHFit.toFixed(3), letterbox: false });
   }
-  return { samples, fallbackReason };
+  return { samples, reason };
 }
 
-async function detectPath(opts, srcW, srcH) {
-  // Init detector; if it fails, mark for fallback.
-  await initDetector({});
+function jlog(opts, obj) {
+  if (opts.jsonLogs) process.stdout.write(JSON.stringify({ ts: Date.now(), ...obj }) + '\n');
+}
+
+async function collectLeadIn(opts) {
+  // Run detection over the first 5s (capped to clip duration) for auto-calibration.
+  const leadEnd = Math.min(opts.endMs, opts.startMs + 5000);
+  const samples = [];
+  for await (const frame of extractFrames({
+    input: opts.in,
+    sampleFps: Math.max(opts.fps, 8), // higher sample rate during calibration
+    startMs: opts.startMs,
+    endMs: leadEnd,
+  })) {
+    let faces = [];
+    try {
+      faces = detectFaces(frame.rgb, frame.width, frame.height, frame.tMs,
+                          frame.sourceWidth, frame.sourceHeight);
+    } catch { /* ignore per-frame */ }
+    samples.push({ tMs: frame.tMs, faces });
+  }
+  return samples;
+}
+
+async function detectPath(opts, srcW, srcH, targetW, targetH) {
+  await initDetector({ minConfidence: opts.minConfidence });
   if (!isDetectorReady()) {
     return { samples: null, reason: 'detector_unavailable: ' + (getDisabledReason() || 'unknown') };
   }
 
-  const tracker = new ActiveSpeakerTracker({});
+  // Resolve speaker map: explicit string | 'auto' (calibrate) | null (no audio cue).
+  let speakerMap = null;
+  let transcript = null;
+  if (opts.transcript) {
+    try { transcript = JSON.parse(readFileSync(opts.transcript, 'utf-8')); }
+    catch (e) { jlog(opts, { event: 'warn', msg: 'transcript_load_failed: ' + e.message }); }
+  }
 
-  const raw = []; // collected {t_ms, cx, cy} from active-speaker
+  if (opts.speakerMap && transcript) {
+    const parsed = parseSpeakerMap(opts.speakerMap);
+    if (parsed === 'auto') {
+      jlog(opts, { event: 'calibration_start' });
+      const lead = await collectLeadIn(opts);
+      speakerMap = autoCalibrateSpeakerMap(lead, transcript, srcW, srcH);
+      jlog(opts, { event: 'calibration_done', map: speakerMap });
+    } else if (parsed) {
+      speakerMap = parsed;
+    }
+  }
+
+  const tracker = new ActiveSpeakerTracker({
+    weights: opts.weights || undefined,
+    disableActiveSpeaker: opts.noActiveSpeaker,
+    transcript,
+    speakerMap,
+  });
+
+  if (opts.debug) mkdirSync('./debug', { recursive: true });
+
+  const raw = [];
   let framesProcessed = 0;
   let framesWithFace = 0;
   let lastGood = null;
+  let lastDebugFrame = -30;
 
   for await (const frame of extractFrames({
     input: opts.in,
@@ -120,9 +270,7 @@ async function detectPath(opts, srcW, srcH) {
     try {
       faces = detectFaces(frame.rgb, frame.width, frame.height, frame.tMs,
                           frame.sourceWidth, frame.sourceHeight);
-    } catch {
-      faces = [];
-    }
+    } catch { faces = []; }
 
     const ctx = { tMs: frame.tMs, frameWidth: frame.sourceWidth, frameHeight: frame.sourceHeight };
     const pick = tracker.pickActiveFace(faces, ctx);
@@ -132,25 +280,35 @@ async function detectPath(opts, srcW, srcH) {
       lastGood = { cx: pick.face.x, cy: pick.face.y };
       raw.push({ t_ms: frame.tMs, cx: pick.face.x, cy: pick.face.y });
     } else if (lastGood) {
-      // Coast on last known good (Kalman will smooth across gaps).
       raw.push({ t_ms: frame.tMs, cx: lastGood.cx, cy: lastGood.cy });
     } else {
-      // No face yet at all — drop a center placeholder; Kalman will pick it up.
       raw.push({ t_ms: frame.tMs, cx: srcW / 2, cy: srcH / 2 });
     }
+
+    if (opts.debug && frame.frameIdx - lastDebugFrame >= 30) {
+      lastDebugFrame = frame.frameIdx;
+      const idxStr = String(frame.frameIdx).padStart(5, '0');
+      try {
+        writeDebugPpm(frame.rgb, frame.width, frame.height, pick.face,
+                      './debug/frame-' + idxStr + '.ppm',
+                      { sx: frame.sourceWidth / frame.width, sy: frame.sourceHeight / frame.height });
+      } catch (e) {
+        jlog(opts, { event: 'warn', msg: 'debug_write_failed: ' + e.message });
+      }
+    }
+
+    jlog(opts, { event: 'frame', t_ms: frame.tMs, faces: faces.length,
+                 chosen: !!pick.face, faceId: pick.faceId, scores: pick.scores });
   }
 
-  if (framesProcessed === 0) {
-    return { samples: null, reason: 'no_frames_extracted' };
-  }
+  if (framesProcessed === 0) return { samples: null, reason: 'no_frames_extracted' };
   if (framesWithFace / framesProcessed < 0.5) {
     return { samples: null, reason: 'low_face_yield: ' + framesWithFace + '/' + framesProcessed };
   }
 
-  // Smooth + clamp using EXISTING Kalman + velocity clamp.
   const cxs = kalman1d(raw.map((r) => r.cx));
   const cys = kalman1d(raw.map((r) => r.cy));
-  const scaleHFit = srcH / TARGET_H;
+  const scaleHFit = srcH / targetH;
   let samples = raw.map((r, i) => ({
     t_ms: r.t_ms,
     cx: Math.round(cxs[i]),
@@ -160,31 +318,46 @@ async function detectPath(opts, srcW, srcH) {
   }));
   samples = clampVelocity(samples, opts.maxPanPxS);
 
-  return { samples, framesProcessed, framesWithFace };
+  return { samples, framesProcessed, framesWithFace, speakerMap };
 }
 
 (async () => {
   const opts = parseArgs(process.argv.slice(2));
-  if (!opts.in || !opts.out || opts.startMs == null || opts.endMs == null) {
-    die('usage: cf-reframe --in <mp4> --out <json> --start-ms N --end-ms N [--mode face|object|center] [--fps 6] [--max-pan-px-s 80]');
-  }
+
+  // Output default
+  if (!opts.out) opts.out = './crop_path.json';
+
+  if (!opts.in) die('source required — pass positional or --in <path>; see --help');
+  if (!existsSync(opts.in)) die('source not found: ' + opts.in);
 
   const dims = probe(opts.in);
   if (!dims || !dims.width || !dims.height) die('could not probe ' + opts.in);
-  const { width: srcW, height: srcH } = dims;
+  const { width: srcW, height: srcH, duration_ms } = dims;
+
+  if (opts.startMs == null) opts.startMs = 0;
+  if (opts.endMs == null) opts.endMs = duration_ms || (opts.startMs + 5000);
+  if (opts.endMs <= opts.startMs) die('end-ms must be greater than start-ms');
+
+  const aspect = parseAspect(opts.targetAspect);
+  const targetH = TARGET_H_DEFAULT;
+  const targetW = Math.round((targetH * aspect.w) / aspect.h);
 
   let samples = null;
   let fallback = false;
   let reason = null;
   let detectorLabel = 'mediapipe@blazeface-short';
   let stats = null;
+  let resolvedMap = null;
 
   if (opts.mode === 'face') {
     try {
-      const r = await detectPath(opts, srcW, srcH);
+      const r = await detectPath(opts, srcW, srcH, targetW, targetH);
       samples = r.samples;
-      reason = r.reason;
-      stats = { framesProcessed: r.framesProcessed, framesWithFace: r.framesWithFace };
+      reason = r.reason || null;
+      if (r.samples) {
+        stats = { framesProcessed: r.framesProcessed, framesWithFace: r.framesWithFace };
+        resolvedMap = r.speakerMap || null;
+      }
     } catch (e) {
       reason = 'detect_threw: ' + e.message;
     } finally {
@@ -196,9 +369,9 @@ async function detectPath(opts, srcW, srcH) {
 
   if (!samples) {
     fallback = true;
-    const cc = centerCropSamples(opts, srcW, srcH, reason);
+    const cc = fallbackSamples(opts, srcW, srcH, targetW, targetH, reason);
     samples = cc.samples;
-    detectorLabel = 'center-fallback';
+    detectorLabel = opts.fallbackMode + '-fallback';
   }
 
   const result = {
@@ -206,22 +379,24 @@ async function detectPath(opts, srcW, srcH) {
     clip_id: null,
     source_w: srcW,
     source_h: srcH,
-    target_w: TARGET_W,
-    target_h: TARGET_H,
-    mode: fallback ? 'center' : opts.mode,
+    target_w: targetW,
+    target_h: targetH,
+    mode: fallback ? opts.fallbackMode : opts.mode,
     detector: detectorLabel,
     samples,
     interp: 'linear',
     fallback_used: fallback,
     fallback_reason: reason,
     stats: stats || undefined,
+    speaker_map: resolvedMap || undefined,
   };
 
-  mkdirSync(dirname(opts.out), { recursive: true });
+  mkdirSync(dirname(resolvePath(opts.out)), { recursive: true });
   writeFileSync(opts.out, JSON.stringify(result, null, 2));
   process.stdout.write(JSON.stringify({
     event: 'done', samples: samples.length, fallback, detector: detectorLabel,
     framesProcessed: stats ? stats.framesProcessed : 0,
     framesWithFace: stats ? stats.framesWithFace : 0,
+    output: opts.out,
   }) + '\n');
 })();
