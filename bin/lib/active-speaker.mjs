@@ -19,12 +19,13 @@
 // renormalization (which over-weights mouth motion) — instead we use a
 // hand-tuned set that leans more on centrality/confidence, since mouth motion
 // alone tends to be noisy in talking-head clips.
+import { FaceTracker } from './face-tracker.mjs';
+
 const DEFAULT_WEIGHTS = { audio: 0.3, mouth: 0.5, central: 0.1, confidence: 0.1 };
 const DEFAULT_NO_AUDIO_WEIGHTS = { audio: 0, mouth: 0.6, central: 0.25, confidence: 0.15 };
 const DEFAULT_SWITCH_COOLDOWN_MS = 800;
 const DEFAULT_FRAME_LOCK = 24;
 const MOUTH_WINDOW_FRAMES = 10;
-const IDENTITY_MAX_DIST_FACTOR = 0.25; // 25% of min(frame_w, frame_h)
 
 export class ActiveSpeakerTracker {
   /**
@@ -52,9 +53,11 @@ export class ActiveSpeakerTracker {
     this.transcript = opts.transcript || null;
     this.speakerMap = opts.speakerMap || null;
 
-    // Identity tracking state
-    this._tracks = new Map();        // faceId → { lastSeen: tMs, x, y, mouthHistory: [{tMs, mx, my}] }
-    this._nextFaceId = 1;
+    // Identity tracking: delegated to FaceTracker (v0.2.0). Mouth history stays
+    // here because it's about scoring, not identity — and is keyed by the
+    // tracker-assigned face IDs.
+    this._tracker = opts.faceTracker || new FaceTracker({});
+    this._mouthHistory = new Map();   // faceId → [{tMs, mx, my}]
 
     // Switching state
     this._currentId = null;
@@ -64,8 +67,8 @@ export class ActiveSpeakerTracker {
   }
 
   reset() {
-    this._tracks.clear();
-    this._nextFaceId = 1;
+    this._tracker.reset();
+    this._mouthHistory.clear();
     this._currentId = null;
     this._currentSinceTMs = -Infinity;
     this._currentSinceFrame = -Infinity;
@@ -154,50 +157,40 @@ export class ActiveSpeakerTracker {
   // ---- internals ----
 
   _matchTracks(faces, ctx) {
-    const maxDist = Math.min(ctx.frameWidth, ctx.frameHeight) * IDENTITY_MAX_DIST_FACTOR;
-    const matched = [];
-    const usedIds = new Set();
-    for (const face of faces) {
-      // Nearest existing track by Euclidean distance.
-      let bestId = null;
-      let bestD = Infinity;
-      for (const [id, t] of this._tracks) {
-        if (usedIds.has(id)) continue;
-        const d = Math.hypot(face.x - t.x, face.y - t.y);
-        if (d < bestD) { bestD = d; bestId = id; }
-      }
-      let faceId;
-      if (bestId != null && bestD <= maxDist) {
-        faceId = bestId;
-        usedIds.add(bestId);
-      } else {
-        faceId = this._nextFaceId++;
-      }
-      // Update track + mouth history.
-      const t = this._tracks.get(faceId) || { mouthHistory: [] };
-      t.lastSeen = ctx.tMs;
-      t.x = face.x; t.y = face.y;
-      const mouth = face.keypoints && face.keypoints.mouth;
-      if (mouth) {
-        t.mouthHistory.push({ tMs: ctx.tMs, mx: mouth.x, my: mouth.y });
-        if (t.mouthHistory.length > MOUTH_WINDOW_FRAMES + 1) {
-          t.mouthHistory.shift();
-        }
-      }
-      this._tracks.set(faceId, t);
+    // Identity assignment: pure IoU via FaceTracker.
+    const tracked = this._tracker.assignIds(faces, ctx.tMs);
 
-      // Compute mouth delta for this face (sum of frame-to-frame distances over the window).
-      const mh = t.mouthHistory;
-      let mouthDelta = 0;
-      for (let i = 1; i < mh.length; i++) {
-        mouthDelta += Math.hypot(mh[i].mx - mh[i - 1].mx, mh[i].my - mh[i - 1].my);
+    // Mouth-history update + rolling-delta computation — scoring concern,
+    // keyed by tracker-assigned IDs.
+    const matched = [];
+    const seenIds = new Set();
+    for (let i = 0; i < tracked.length; i++) {
+      const face = tracked[i];
+      const faceId = face.id;
+      seenIds.add(faceId);
+
+      const mouth = face.keypoints && face.keypoints.mouth;
+      let mh = this._mouthHistory.get(faceId);
+      if (!mh) { mh = []; this._mouthHistory.set(faceId, mh); }
+      if (mouth) {
+        mh.push({ tMs: ctx.tMs, mx: mouth.x, my: mouth.y });
+        if (mh.length > MOUTH_WINDOW_FRAMES + 1) mh.shift();
       }
-      matched.push({ face, faceId, mouthDelta });
+
+      let mouthDelta = 0;
+      for (let j = 1; j < mh.length; j++) {
+        mouthDelta += Math.hypot(mh[j].mx - mh[j - 1].mx, mh[j].my - mh[j - 1].my);
+      }
+      matched.push({ face: faces[i], faceId, mouthDelta });
     }
 
-    // Reap tracks not seen for >2s — keeps the matcher cheap on long videos.
-    for (const [id, t] of this._tracks) {
-      if (ctx.tMs - t.lastSeen > 2000) this._tracks.delete(id);
+    // Mouth-history hygiene: drop entries for IDs the tracker no longer
+    // reports. We rely on the tracker's own stale-reap to actually delete
+    // the canonical track; we just shed the per-id mouth ring buffer.
+    for (const id of this._mouthHistory.keys()) {
+      if (!seenIds.has(id) && this._tracker._tracks && !this._tracker._tracks.has(id)) {
+        this._mouthHistory.delete(id);
+      }
     }
 
     return matched;
