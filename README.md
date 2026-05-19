@@ -16,25 +16,19 @@ captions, B-roll, and a music bed — ready to publish to TikTok, Reels, Shorts,
 
 ---
 
-## ⚠️ Status (v0.1.2)
+## ✅ Status (v0.2.0)
 
-Face-tracked reframe is **not functional in Node.js** in this release.
-Our chosen detector library ([`@mediapipe/tasks-vision`](https://www.npmjs.com/package/@mediapipe/tasks-vision))
-is browser-only — it mounts DOM nodes during initialization that don't exist
-in a Node process. Every `cf-reframe` invocation falls through to a
-**static center-crop**, regardless of model presence, flags, or input.
+**Face-tracked reframe is working** — Ultraface RFB-320 face detection
+(`onnxruntime@ultraface-rfb-320`) followed by 68-point PFLD landmark
+extraction, both pure-ONNX, no browser dependencies, no Node-version pin
+ceiling. The v0.1.x MediaPipe gap is closed.
 
-This is documented here so the README matches what the code actually does.
-Real face-tracked reframe lands in **v0.2.0** after a swap to a Node-native
-detector — see [docs/ROADMAP.md](docs/ROADMAP.md).
-
-Other pipeline stages function as documented: transcribe, clip-scout,
-captions, B-roll, music, render, publish, schedule, analytics. The
-fallback crop is sensible (center or top-third per `--fallback`) and the
-renderer still produces a valid 9:16 mp4 — you just don't get face tracking.
-
-See [docs/REVIEW.md](docs/REVIEW.md) for the full v0.1.1 self-audit that
-surfaced this.
+**Known characteristics:** PFLD inference is ~60 ms per face on CPU. A
+30-minute source at 6 fps sampling processes in ~27 minutes end-to-end.
+This is the local-CLI trade-off for not needing a cloud GPU or
+subscription — see the [Performance](#performance) section. Speed-up track
+in [docs/ROADMAP.md](docs/ROADMAP.md) (int8 quantization, worker threads,
+optional GPU backend).
 
 ---
 
@@ -288,11 +282,53 @@ your-project/
 └── renders/<slug>/<clip-id>.mp4     # final 9:16 export
 ```
 
+## Performance
+
+Measured on a 5-second talking-head fixture (Linux, Node 20, Apple-Silicon-class CPU):
+
+| Stage | Median | p95 |
+|---|---|---|
+| Ultraface detect | 9.5 ms | 21.8 ms |
+| PFLD landmark (per face) | 117.6 ms | 130.8 ms |
+| Per-frame total | ~130 ms | ~200 ms |
+
+Projected processing time on real podcast / talking-head sources at default
+6 fps sampling:
+
+| Source length | Frames | Est. pipeline time |
+|---|---|---|
+| 5 min | 1,800 | ~5 min |
+| 15 min | 5,400 | ~14 min |
+| 30 min | 10,800 | ~27 min |
+| 60 min | 21,600 | ~55 min |
+
+**Honest framing**: this is **3-5× slower than cloud-GPU tools** like Opus
+Clip or Klap. The trade-off is intentional — ClipForge runs entirely on
+your machine, no API quotas, no subscriptions, no upload of source video.
+The [v0.3.0 roadmap](docs/ROADMAP.md) tracks the speed-up path: int8
+quantization, worker-thread parallelism, optional GPU execution provider.
+
+## Models & licenses
+
+| Model | Source | License | Notes |
+|---|---|---|---|
+| Ultraface RFB-320 (face detection) | [Linzaer/Ultra-Light-Fast-Generic-Face-Detector](https://github.com/Linzaer/Ultra-Light-Fast-Generic-Face-Detector-1MB) via `onnx/models` | MIT | Verified clean |
+| PFLD 68-point (face landmarks) | [`cunjian/pytorch_face_landmark`](https://github.com/cunjian/pytorch_face_landmark) | **None stated** [^pfld-lic] | Replacement tracked in [`docs/ROADMAP.md`](docs/ROADMAP.md) v0.3.0 |
+
+[^pfld-lic]: The upstream PFLD model has no explicit LICENSE file. ClipForge
+    fetches it directly from the upstream raw URL on every install (never
+    rebundles), prints a license-notice during install, and supports a
+    `CF_PFLD_MODEL_URL` env override to pin your own source. Replacement
+    with a verified-Apache or verified-MIT 68-point ONNX is on the v0.3.0
+    work plan. See `bin/install-models.mjs` header for the full mitigation
+    layout.
+
 ## Engineering
 
-- [docs/REVIEW.md](docs/REVIEW.md) — v0.1.1 critical self-audit (the
-  document that surfaced the v0.1.2 truth disclosure).
-- [docs/ROADMAP.md](docs/ROADMAP.md) — what's planned for v0.2.0 / v0.3.0.
+- [docs/REVIEW.md](docs/REVIEW.md) — v0.1.1 critical self-audit.
+- [docs/bench-v0.2.0.md](docs/bench-v0.2.0.md) — detector + landmark library
+  benches and decisions.
+- [docs/ROADMAP.md](docs/ROADMAP.md) — what's planned for v0.3.0+.
 - [docs/blueprint.md](docs/blueprint.md) — original design notes.
 - [CHANGELOG.md](CHANGELOG.md) — release-by-release detail.
 

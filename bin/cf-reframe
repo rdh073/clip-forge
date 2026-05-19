@@ -25,6 +25,7 @@ import { dirname, resolve as resolvePath } from 'node:path';
 
 import { extractFrames } from './lib/frame-extractor.mjs';
 import { initDetector, detectFaces, closeDetector, isDetectorReady, getDisabledReason } from './lib/face-detector.mjs';
+import { initLandmarker, detectLandmarks, closeLandmarker, isLandmarkerReady, getLandmarkerReason } from './lib/landmark-detector.mjs';
 import { ActiveSpeakerTracker, parseSpeakerMap, autoCalibrateSpeakerMap } from './lib/active-speaker.mjs';
 import { writeDebugPpm } from './lib/debug-frame.mjs';
 
@@ -241,6 +242,13 @@ async function detectPath(opts, srcW, srcH, targetW, targetH) {
     return { samples: null, reason: 'detector_unavailable: ' + (getDisabledReason() || 'unknown'),
              speakerMap };
   }
+  // Pre-warm the landmarker so the frame-budget heuristic below sees its
+  // readiness state before the loop starts. Lazy-init inside the loop would
+  // race the budget check on the first frame.
+  await initLandmarker({});
+  if (!isLandmarkerReady()) {
+    jlog(opts, { event: 'warn', msg: 'landmarker_unavailable: ' + (getLandmarkerReason() || 'unknown') + ' — proceeding without 68-pt keypoints' });
+  }
 
   if (speakerMapWantsAuto) {
     jlog(opts, { event: 'calibration_start' });
@@ -258,7 +266,11 @@ async function detectPath(opts, srcW, srcH, targetW, targetH) {
 
   if (opts.debug) mkdirSync('./debug', { recursive: true });
 
-  const FRAME_BUDGET_MS = 200; // soft per-frame budget; see Phase F notes in CHANGELOG
+  // Soft per-frame budget. v0.1.x was sized for face detection only (200ms);
+  // v0.2.0 chains detection → PFLD landmark on each face, so the realistic
+  // ceiling is higher. We bump to 1000ms when the landmarker is loaded so
+  // the cooldown doesn't fire on every frame and starve the pipeline.
+  const FRAME_BUDGET_MS = isLandmarkerReady() ? 1000 : 200;
   const raw = [];
   let framesProcessed = 0;
   let framesWithFace = 0;
@@ -288,6 +300,20 @@ async function detectPath(opts, srcW, srcH, targetW, targetH) {
         try {
           faces = await detectFaces(frame.rgb, frame.width, frame.height, frame.tMs,
                                     frame.sourceWidth, frame.sourceHeight);
+          // Phase 2B: augment each face with PFLD 68-point landmarks (lazy init).
+          if (faces.length > 0) {
+            if (!isLandmarkerReady() && !getLandmarkerReason()) {
+              await initLandmarker({});
+            }
+            if (isLandmarkerReady()) {
+              const augmented = [];
+              for (const f of faces) {
+                augmented.push(await detectLandmarks(f, frame.rgb, frame.width, frame.height,
+                                                     frame.sourceWidth, frame.sourceHeight));
+              }
+              faces = augmented;
+            }
+          }
         } catch (e) {
           faces = [];
           jlog(opts, { event: 'frame_detect_threw', t_ms: frame.tMs, error: e.message });
@@ -419,6 +445,7 @@ async function detectPath(opts, srcW, srcH, targetW, targetH) {
       reason = 'detect_threw: ' + e.message;
     } finally {
       closeDetector();
+      closeLandmarker();
     }
   } else {
     reason = 'mode=' + opts.mode + ' (face detection skipped)';

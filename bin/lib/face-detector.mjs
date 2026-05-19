@@ -170,6 +170,11 @@ export async function detectFaces(rgbBytes, width, height, tMs, sourceWidth, sou
     }
     if (!suppress) kept.push(c);
   }
+  // Cap to top-3 by confidence. Downstream stages (PFLD landmark, active-
+  // speaker scorer) only USE the chosen face; running landmarks on every
+  // post-NMS candidate burns budget without changing the pick. Three slots
+  // is enough headroom for genuine multi-speaker frames.
+  if (kept.length > 3) kept.length = 3;
 
   // Up-project normalized [0,1] boxes to source coordinates.
   return kept.map((b) => {

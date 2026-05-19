@@ -1,65 +1,79 @@
 # Roadmap
 
-This file tracks the post-v0.1.2 work captured by the v0.1.1 self-audit
+This file tracks the post-v0.1.x work captured by the v0.1.1 self-audit
 ([docs/REVIEW.md](REVIEW.md)) plus follow-on polish. Versions follow
 [SemVer](https://semver.org); 0.x means "we may break public surfaces
 between minors".
 
-## v0.2.0 — Real face-tracked reframe
+## ✅ Shipped in v0.2.0 — Real face-tracked reframe
 
-**Theme:** make the headline feature actually work.
+- **Detector library swap.** `@mediapipe/tasks-vision` (browser-only) →
+  `onnxruntime-node` + Ultraface RFB-320. Node-version-agnostic, no engine
+  ceiling. Bench data: [docs/bench-v0.2.0.md](bench-v0.2.0.md).
+- **PFLD 68-point landmark stage.** Two-stage pipeline: Ultraface bbox →
+  PFLD per-face → structured 68-point keypoint object (jaw / eyebrowL /
+  eyebrowR / nose / eyeL / eyeR / mouthOuter / mouthInner + centroid
+  aliases for active-speaker compat).
+- **Renderer (cf-ffmpeg)** still reads `samples[0]` — the animated-crop
+  rewrite (was CR-2) moves to v0.2.1 below.
 
-- **Swap detector library.** Replace `@mediapipe/tasks-vision` (browser-only)
-  with a Node-native alternative. Candidate shortlist:
-  - [`@vladmandic/human`](https://github.com/vladmandic/human) — TF.js backend,
-    478-point landmarks, BlazeFace-class detector, active maintenance.
-  - [`@vladmandic/face-api`](https://github.com/vladmandic/face-api) —
-    lighter alternative, fewer features.
-  - `onnxruntime-node` + a RetinaFace ONNX model — leanest install, lowest
-    abstraction.
+## v0.2.1 — Animated crop + success-path tests
 
-  Pick is gated on Node install size + first-detect latency benchmarks.
+- **Animated crop in the renderer (CR-2).** `bin/cf-ffmpeg` currently reads
+  `samples[0]` only. Replace with an `ffmpeg sendcmd` timeline driving the
+  `crop` filter, or a piecewise `if(lt(t, T_n), …)` expression for ≤ 60
+  keyframes. Honours the full path the reframe pipeline produces.
+- **IoU tracker module (Phase 2C).** Extract identity tracking from
+  `active-speaker.mjs._matchTracks` into `bin/lib/face-tracker.mjs`. Simple
+  IoU > 0.3 matching, deterministic, ~50 lines, mutation-test-ready.
+- **Real-face success-path test (CR-5).** Ship the talking-head fixture
+  (already on bench/v0.2.0 branch) under the proper integration test
+  asserting non-fallback detector + 68 keypoints + crop motion stddev.
 
-- **Animated crop in the renderer (fixes CR-2).** `bin/cf-ffmpeg` currently
-  reads `samples[0]` only. Replace with an `ffmpeg sendcmd` timeline driving
-  the `crop` filter, or a piecewise `if(lt(t, T_n), …)` expression for
-  ≤ 60 keyframes. Either honours the full path the reframe pipeline produces.
+## v0.3.0 — License hardening + detection speed-up
 
-- **Real-face success-path integration test (fixes CR-5).** Ship a
-  CC0-licensed face fixture (5 s mp4 < 500 KB). Test asserts:
-  - `out.detector === '<new-library>@<model>'` (not fallback)
-  - `out.stats.framesWithFace / out.stats.framesProcessed > 0.8`
-  - `stddev(samples.map(s => s.cx)) > 5` (crop actually moves)
-  - `samples.length > 30` for a 5 s clip at 6 fps sampling
+### Detection speedup
 
-- **Benchmark + publish numbers.** Per-frame detect latency on a 1080p
-  source, cross-platform (Linux + macOS). Surface in README.
+- **int8 quantize the PFLD model.** Offline via
+  `onnxruntime.quantization.quantize_dynamic`. Target: halve inference
+  latency (~30 ms / face vs current 60 ms). Risk: accuracy drop on small
+  mouth/eye keypoints — measure NME on a held-out set before adopting.
+- **Worker-thread pool.** Move PFLD inference into a `worker_thread` pool
+  (2-4 workers). Parallelize per-face landmarking. Hardens the per-frame
+  budget into a real hard-cancel.
+- **Optional GPU execution provider.** Add `CUDAExecutionProvider`
+  (Linux/Windows) and `CoreMLExecutionProvider` (macOS) as opt-in via
+  `CF_ORT_PROVIDER=cuda|coreml` env. Document install steps.
+- **MobileNet-class PFLD when verified-Apache lands.** Smaller model in the
+  300-500 KB range with ~10 ms inference. Tracked alongside the license
+  swap below.
 
-## v0.2.x — Renderer + stability follow-ups
+### License hardening
 
-- **CR-3 mitigation:** drop the fictional sha256 in `install-models.mjs`
-  (already gone in v0.1.2) or pin a real hash for the next model fetch.
+- **Replace cunjian PFLD with a verified-license alternative.** Candidates
+  to bench in `docs/bench-v0.3.0.md`:
+  - MediaPipe FaceMesh Apache-2.0 ONNX export (verify a stable URL with
+    license inheritance documented)
+  - atksh/onnx-facial-lmk-detector MIT 106-point — subset to 68 effective
+  - Own export from polarisZhao/PFLD-pytorch's MIT-licensed training code
+- **Tracker issue:**
+  [License hardening: replace cunjian PFLD model](https://github.com/rdh073/clip-forge/issues)
+  (label: `license-debt`, `v0.3.0`).
+
+### Stability + polish carry-over from v0.1.1 review
+
 - **W-1 backpressure:** add `pause()`/`resume()` flow control to
-  `bin/lib/frame-extractor.mjs` so a slow consumer doesn't buffer the entire
-  source.
+  `bin/lib/frame-extractor.mjs` so a slow consumer doesn't buffer the
+  entire source.
 - **Numerical-correctness tests (W-2):** mutation-style coverage on
   `clampVelocity`, `kalman1d`, `_audioScore`. Today these are exercised at
   control-flow level only.
-- **Worker-thread offload:** move detection into a `worker_thread` so the
-  200 ms per-frame budget becomes a hard cancel rather than a soft cooldown.
-
-## v0.3.0 — Polish
-
-- **Mutation test pass.** Stryker-style sweep over `bin/lib/*`. Surface a
-  coverage delta in CI.
 - **Speaker → face calibration as its own skill.** Today's `--speaker-map`
   is buried inside `cf-reframe`. Promote to `/clip-forge:reframe --calibrate`.
 - **Real demo GIF.** vhs / asciinema recording of `/clip-forge:start --yolo`
   on the sample, replacing the v0.1.2 solid-colour placeholder.
-- **Fix CLI ergonomics (W-4, W-5):** error on conflicting `--in` + positional,
-  route debug-write errors to stderr unconditionally.
-- **Node engines bump (W-3):** require `>=20.6` once anything starts using
-  `import.meta.resolve` (after the library swap, the dependency may return).
+- **Fix CLI ergonomics (W-4, W-5):** error on conflicting `--in` +
+  positional source, route debug-write errors to stderr unconditionally.
 
 ## v0.4.0 — Real publishing
 
@@ -73,7 +87,7 @@ ready when credentials arrive.
 
 ## Tracking
 
-Each item above maps to a GitHub issue once
-[v0.1.2 ships](https://github.com/rdh073/clip-forge/releases). If something
-isn't represented here and you'd like it considered, open a feature request
-via [.github/ISSUE_TEMPLATE/feature_request.yml](../.github/ISSUE_TEMPLATE/feature_request.yml).
+Each item above maps to a GitHub issue once the corresponding release is
+cut. If something isn't represented here and you'd like it considered,
+open a feature request via
+[`.github/ISSUE_TEMPLATE/feature_request.yml`](../.github/ISSUE_TEMPLATE/feature_request.yml).

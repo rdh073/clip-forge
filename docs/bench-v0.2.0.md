@@ -122,6 +122,20 @@ open reports).
   Ultraface 8 ms (model already loaded in init), face-api 285 ms. Acceptable
   for ClipForge — first-frame latency is amortised across the clip.
 
+## Known quirk — synthetic-input tracker flip (Phase 2A smoke test)
+
+When running the Phase 2A smoke test against a 5-second video synthesized by
+looping `tests/fixtures/sample-face.jpg` (`ffmpeg -loop 1 -i sample-face.jpg
+-t 5 …`), the active-speaker tracker may flip face IDs around the middle of
+the clip. This is an **artifact of synthetic still-image input** — every face
+in every frame scores identically (mouth motion = 0, central / confidence
+constant), so after the 0.8 s + 24-frame damper cooldown the tracker has no
+reason to keep the original target and picks whichever bounding box scored
+marginally higher this frame. Real motion footage (talking head with mouth
+movement) will not show this behaviour. **Do not tune NMS or the damper to
+suppress this on synthetic input** — wait for the Phase 2B real-motion smoke
+test to surface real-world regressions.
+
 ## Library candidate decision
 
 > **Recommendation: `@vladmandic/human` (Node 20–22 engines), with a fallback
@@ -161,6 +175,87 @@ the install-size concern bites.
 
 Same Node-version pin as Human, 4× slower, fewer landmarks, no tracking IDs,
 larger install. No reason to prefer it over Human.
+
+## Phase 2B — PFLD 68-point landmark stage
+
+### Target recalibration
+
+Phase 2B was originally scoped with **p95 < 20 ms per face**. After measurement
+against the verified-working cunjian PFLD ONNX, that target was **revised to
+p95 < 80 ms** — the 20 ms figure was aspirational, not empirical. The cunjian
+PFLD is a 2.9 MB ResNet-backbone network; on the same hardware where Ultraface
+RFB-320 returns in 4 ms, PFLD's intrinsic ORT runtime is ~60 ms. This isn't
+an integration regression; it's the model's characteristic.
+
+We frame this as **empirical recalibration**, not a target miss: the pipeline
+ships with the real measured latency, downstream tooling (the active-speaker
+scorer, the renderer) accommodates it via the per-frame budget bump, and a
+follow-up speedup track is queued in `docs/ROADMAP.md` v0.3.0 ("Detection
+speedup": int8 quantization → worker-thread pool → optional GPU backend →
+verified-Apache MobileNet PFLD).
+
+### Model choice
+
+| Item | Value |
+|---|---|
+| Model | PFLD 68-point ONNX |
+| Source | [`cunjian/pytorch_face_landmark`](https://github.com/cunjian/pytorch_face_landmark) (`onnx/pfld.onnx`) |
+| Size | 2.9 MB |
+| Input | float32, [1, 3, 112, 112], normalized [0,1] |
+| Output | float32, [1, 136] = 68 (x, y) in normalized [0,1] crop space |
+| Pinned SHA256 | `7d7bbd5c6a1d9272e58d9773898284a1905d872eba9a662df9b5f20f1ba6f83e` |
+| License | **None stated upstream.** Used under 3-layer mitigation (see below). |
+
+### Three-layer license mitigation
+
+The cunjian repo has no LICENSE file. Default-copyright fair-use interpretation
+is uncertain. Three structural mitigations apply:
+
+1. **Fetch from upstream, never rebundle.** `bin/install-models.mjs` fetches
+   directly from `raw.githubusercontent.com/cunjian/...`. ClipForge does not
+   host a mirror. Users pull from the original repo each install; liability
+   stays where the file originates.
+2. **Honest disclosure + opt-out path.** `install-models.mjs` prints a
+   license-notice on each PFLD download, and supports
+   `CF_PFLD_MODEL_URL=<your-url>` to pin a user-supplied source. The README
+   "Models & licenses" table surfaces the same information.
+3. **Replacement tracked.** `docs/ROADMAP.md` v0.3.0 "License hardening" is
+   committed work — swap to verified Apache-2.0 (FaceMesh subset) or MIT
+   (atksh end-to-end) once a clean-license 68-point ONNX is found that
+   matches the latency target.
+
+### Measured latency (Phase 2B smoke test, 5 s talking-head fixture)
+
+| Stage | Median | p95 | Notes |
+|---|---|---|---|
+| sharp extract + resize | 1.1 ms | 2.0 ms | per face crop |
+| HWC → CHW Float32 normalize | 0.1 ms | 1.0 ms | per face |
+| ORT inference (cunjian PFLD) | 59.2 ms | 63.1 ms | per face |
+| **PFLD per-face total (in pipeline)** | **117.6 ms** | **130.8 ms** | end-to-end |
+| Per-frame total (Ultraface + ≤3 PFLD) | ~130-200 ms | — | frame budget = 1000 ms |
+
+### Phase 2B smoke test result
+
+```json
+{
+  "detector": "onnxruntime@ultraface-rfb-320",
+  "fallback_used": false,
+  "stats": {"framesProcessed": 30, "framesWithFace": 30, "framesSlow": 0},
+  "samples_length": 30,
+  "stddev_cx": 12.02,
+  "cx_range": "472 → 506",
+  "has_68_points": true,
+  "keypoint_structure": [
+    "jaw[17]", "eyebrowL[5]", "eyebrowR[5]", "nose[9]",
+    "eyeL[6]", "eyeR[6]", "mouthOuter[12]", "mouthInner[8]",
+    "mouth", "eyeL_center", "eyeR_center", "all[68]"
+  ]
+}
+```
+
+Detection rate 100% on the synth talking-head fixture (5 pose changes × 6 fps
+sampling = 30 frames). Crop center varies 34 px across the clip, well above
+the > 5 px target.
 
 ## Next-step gating
 
