@@ -1,0 +1,36 @@
+{
+  "name": "Neon",
+  "inspired_by": "Glow-stroke 80s arcade text",
+  "font": {
+    "family": "Bebas Neue",
+    "fallback": ["Anton", "Impact"],
+    "weight": 900,
+    "size_px": 78,
+    "letter_spacing_px": 4
+  },
+  "colors": {
+    "fill": "#000000",
+    "stroke": "#00f0ff",
+    "highlight": "#ff00aa",
+    "highlight_fill": "#000000"
+  },
+  "outline": {
+    "width_px": 6,
+    "shadow_px": 12,
+    "shadow_color": "#00f0ff",
+    "glow": true
+  },
+  "position": {
+    "alignment": "bottom_center",
+    "margin_v_px": 260,
+    "max_lines": 2
+  },
+  "animation": {
+    "enter": "slide_up",
+    "enter_duration_ms": 140,
+    "exit": "fade",
+    "highlight": "glow_pulse"
+  },
+  "emoji_strategy": "off",
+  "words_per_line": 4
+}

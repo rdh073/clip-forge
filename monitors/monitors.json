@@ -1,0 +1,17 @@
+[
+  {
+    "name": "render-queue",
+    "description": "Surfaces finished renders as they appear in ./renders/",
+    "command": "node ${CLAUDE_PLUGIN_ROOT}/bin/queue-watch.mjs render"
+  },
+  {
+    "name": "publish-queue",
+    "description": "Drains ~/.clip-forge/queue.json at each entry's scheduled_at time",
+    "command": "node ${CLAUDE_PLUGIN_ROOT}/bin/queue-watch.mjs publish"
+  },
+  {
+    "name": "new-uploads",
+    "description": "Notifies when a new mp4 lands in ./uploads/",
+    "command": "node ${CLAUDE_PLUGIN_ROOT}/bin/watch-uploads.mjs"
+  }
+]

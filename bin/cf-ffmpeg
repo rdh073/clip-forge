@@ -1,0 +1,205 @@
+#!/usr/bin/env node
+// cf-ffmpeg — small CLI wrapping ffmpeg with the presets ClipForge needs.
+// Subcommands:
+//   probe     <file>                                → JSON {duration_s,width,height,fps}
+//   ingest    <src> <dst>                            → re-mux/transcode to .mp4
+//   render    --manifest <edit.json>                → full clip render
+//   caption-burn <src> <ass> <dst>                  → burn .ass subs
+//   music-mix    <src> <track> <dst> [--duck]       → sidechain ducking mix
+//   watermark   <src> <logo> <dst>                  → bottom-right watermark
+//
+// All ffmpeg invocations route through `runFfmpeg` so progress streaming and
+// error tailing live in one place.
+
+import { spawn, spawnSync } from 'node:child_process';
+import { readFileSync, existsSync, mkdirSync } from 'node:fs';
+import { dirname, resolve as resolvePath } from 'node:path';
+
+function die(msg, code = 1) {
+  process.stderr.write('cf-ffmpeg: ' + msg + '\n');
+  process.exit(code);
+}
+
+function which(bin) {
+  const r = spawnSync('sh', ['-c', 'command -v ' + bin]);
+  return r.status === 0 ? r.stdout.toString().trim() : null;
+}
+
+if (!which('ffmpeg')) die('ffmpeg not found in PATH');
+if (!which('ffprobe')) die('ffprobe not found in PATH');
+
+function runFfmpeg(args, { onProgress } = {}) {
+  return new Promise((res, rej) => {
+    const p = spawn('ffmpeg', ['-hide_banner', '-y', '-loglevel', 'error', '-progress', 'pipe:2', ...args]);
+    const stderrTail = [];
+    p.stderr.on('data', (chunk) => {
+      const lines = chunk.toString().split('\n');
+      for (const line of lines) {
+        if (!line) continue;
+        if (line.startsWith('out_time_ms=') && onProgress) {
+          const ms = parseInt(line.slice('out_time_ms='.length), 10);
+          if (!Number.isNaN(ms)) onProgress({ out_ms: Math.floor(ms / 1000) });
+        }
+        stderrTail.push(line);
+        if (stderrTail.length > 60) stderrTail.shift();
+      }
+    });
+    p.on('error', rej);
+    p.on('close', (code) => {
+      if (code === 0) res();
+      else rej(new Error('ffmpeg exit ' + code + '\n' + stderrTail.slice(-30).join('\n')));
+    });
+  });
+}
+
+async function probe(file) {
+  const r = spawnSync('ffprobe', [
+    '-v', 'error',
+    '-print_format', 'json',
+    '-show_streams', '-show_format',
+    file,
+  ]);
+  if (r.status !== 0) die('ffprobe failed: ' + r.stderr.toString());
+  const data = JSON.parse(r.stdout.toString());
+  const v = (data.streams || []).find((s) => s.codec_type === 'video') || {};
+  const fmt = data.format || {};
+  let fps = 0;
+  if (v.r_frame_rate && v.r_frame_rate.includes('/')) {
+    const [n, d] = v.r_frame_rate.split('/').map(Number);
+    fps = d ? +(n / d).toFixed(3) : 0;
+  }
+  process.stdout.write(JSON.stringify({
+    duration_s: +parseFloat(fmt.duration || 0).toFixed(3),
+    width: v.width || 0,
+    height: v.height || 0,
+    fps,
+    container: fmt.format_name,
+    video_codec: v.codec_name,
+  }) + '\n');
+}
+
+async function ingest(src, dst) {
+  mkdirSync(dirname(dst), { recursive: true });
+  await runFfmpeg(['-i', src, '-c:v', 'libx264', '-preset', 'fast', '-crf', '18',
+                   '-c:a', 'aac', '-b:a', '192k', dst]);
+  process.stdout.write(JSON.stringify({ event: 'done', path: dst }) + '\n');
+}
+
+async function captionBurn(src, ass, dst) {
+  mkdirSync(dirname(dst), { recursive: true });
+  // ass filter needs escaped path
+  const ascii = ass.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\\'");
+  await runFfmpeg(['-i', src, '-vf', "ass='" + ascii + "'",
+                   '-c:v', 'libx264', '-preset', 'fast', '-crf', '20',
+                   '-c:a', 'copy', dst]);
+  process.stdout.write(JSON.stringify({ event: 'done', path: dst }) + '\n');
+}
+
+async function musicMix(src, track, dst, duck) {
+  mkdirSync(dirname(dst), { recursive: true });
+  const filter = duck
+    ? '[1:a]volume=0.18[m];[m][0:a]sidechaincompress=threshold=-28dB:ratio=6:attack=5:release=250[ducked];[0:a][ducked]amix=inputs=2:duration=first[a]'
+    : '[1:a]volume=0.18[m];[0:a][m]amix=inputs=2:duration=first[a]';
+  await runFfmpeg([
+    '-i', src, '-i', track,
+    '-filter_complex', filter,
+    '-map', '0:v', '-map', '[a]',
+    '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
+    '-shortest', dst,
+  ]);
+  process.stdout.write(JSON.stringify({ event: 'done', path: dst }) + '\n');
+}
+
+async function watermark(src, logo, dst) {
+  mkdirSync(dirname(dst), { recursive: true });
+  // bottom-right with 8% padding, 70% opacity
+  const filter = '[1:v]format=rgba,colorchannelmixer=aa=0.7[wm];[0:v][wm]overlay=W-w-W*0.04:H-h-H*0.04';
+  await runFfmpeg(['-i', src, '-i', logo, '-filter_complex', filter,
+                   '-c:v', 'libx264', '-preset', 'fast', '-crf', '20', '-c:a', 'copy', dst]);
+  process.stdout.write(JSON.stringify({ event: 'done', path: dst }) + '\n');
+}
+
+function buildCropExpr(samples, sourceW, sourceH, targetW, targetH) {
+  // Build a piecewise-linear crop expression. ffmpeg supports `if(lt(t,T1),A,B)`
+  // nesting; for many samples we use sendcmd in a future iteration.
+  // For the scaffold: just take the first sample's center as a static crop.
+  const s0 = samples[0] || { cx: sourceW / 2, cy: sourceH / 2, scale: sourceH / targetH };
+  const cropH = Math.floor(targetH / s0.scale);
+  const cropW = Math.floor(cropH * (targetW / targetH));
+  const x = Math.max(0, Math.floor(s0.cx - cropW / 2));
+  const y = Math.max(0, Math.floor(s0.cy - cropH / 2));
+  return { w: cropW, h: cropH, x, y };
+}
+
+async function render({ manifest }) {
+  const m = JSON.parse(readFileSync(manifest, 'utf-8'));
+  const source = './uploads/' + manifest.split('/clips/')[1].split('/')[0] + '/source.mp4';
+  if (!existsSync(source)) die('source not found: ' + source);
+
+  const crop = JSON.parse(readFileSync(m.crop_path, 'utf-8'));
+  const c = buildCropExpr(crop.samples, crop.source_w, crop.source_h, crop.target_w, crop.target_h);
+
+  mkdirSync(dirname(m.output), { recursive: true });
+
+  const ss = (m.start_ms / 1000).toFixed(3);
+  const to = (m.end_ms / 1000).toFixed(3);
+
+  const filters = [
+    'crop=' + c.w + ':' + c.h + ':' + c.x + ':' + c.y,
+    'scale=' + crop.target_w + ':' + crop.target_h,
+  ];
+  if (m.captions && existsSync(m.captions)) {
+    const ascii = m.captions.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\\'");
+    filters.push("ass='" + ascii + "'");
+  }
+  const vf = filters.join(',');
+
+  const args = [
+    '-ss', ss, '-to', to, '-i', source,
+    '-vf', vf,
+    '-c:v', 'libx264',
+    '-preset', m.quality === 'fast' ? 'fast' : 'slow',
+    '-crf', m.quality === 'fast' ? '22' : '18',
+    '-c:a', 'aac', '-b:a', '192k',
+    '-movflags', '+faststart',
+    m.output,
+  ];
+
+  let lastPct = -1;
+  await runFfmpeg(args, {
+    onProgress: ({ out_ms }) => {
+      const total = (m.end_ms - m.start_ms);
+      const pct = Math.min(99, Math.floor((out_ms / total) * 100));
+      if (pct > lastPct) {
+        lastPct = pct;
+        process.stdout.write(JSON.stringify({ event: 'progress', pct }) + '\n');
+      }
+    },
+  });
+  process.stdout.write(JSON.stringify({ event: 'done', path: m.output }) + '\n');
+}
+
+// ----- argv routing -----
+const [, , sub, ...rest] = process.argv;
+const parseFlags = (xs) => {
+  const out = {};
+  for (let i = 0; i < xs.length; i++) {
+    if (xs[i].startsWith('--')) { out[xs[i].slice(2)] = xs[i + 1]; i++; }
+  }
+  return out;
+};
+
+(async () => {
+  try {
+    if (sub === 'probe')         await probe(rest[0]);
+    else if (sub === 'ingest')   await ingest(rest[0], rest[1]);
+    else if (sub === 'render')   await render(parseFlags(rest));
+    else if (sub === 'caption-burn') await captionBurn(rest[0], rest[1], rest[2]);
+    else if (sub === 'music-mix')    await musicMix(rest[0], rest[1], rest[2], rest.includes('--duck'));
+    else if (sub === 'watermark')    await watermark(rest[0], rest[1], rest[2]);
+    else die('unknown subcommand: ' + (sub || '(none)') + '\n' +
+             'try: probe|ingest|render|caption-burn|music-mix|watermark');
+  } catch (e) {
+    die(e.message, 1);
+  }
+})();

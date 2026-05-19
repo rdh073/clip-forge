@@ -1,0 +1,52 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Validate plugin manifest
+        run: claude plugin validate .
+
+      - name: Lint JSON files
+        run: |
+          set -e
+          for f in .claude-plugin/plugin.json settings.json .mcp.json hooks/hooks.json monitors/monitors.json templates/captions/*.json; do
+            node -e "JSON.parse(require('fs').readFileSync('$f','utf8'))" && echo "ok $f"
+          done
+
+      - name: Syntax check bin/*.mjs
+        run: |
+          set -e
+          for f in $(find bin -name '*.mjs'); do
+            node --check "$f" && echo "ok $f"
+          done
+
+      - name: Syntax check bin/* shell scripts
+        run: |
+          set -e
+          for f in bin/cf-ytdlp bin/cf-whisper; do
+            sh -n "$f" && echo "ok $f"
+          done
+
+      - name: Syntax check Node CLIs (no .mjs ext but Node shebang)
+        run: |
+          set -e
+          for f in bin/cf-ffmpeg bin/cf-reframe bin/cf-caption-burn; do
+            node --check "$f" && echo "ok $f"
+          done

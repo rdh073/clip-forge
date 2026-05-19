@@ -1,0 +1,39 @@
+#!/bin/sh
+# cf-ytdlp — yt-dlp wrapper that downloads a URL into ./uploads/<slug>/source.mp4
+# and emits JSON-line progress events. Pure POSIX sh.
+#
+# Usage: cf-ytdlp <url> <output_path>
+
+set -eu
+
+URL="${1:-}"
+OUT="${2:-}"
+
+if [ -z "$URL" ] || [ -z "$OUT" ]; then
+  echo 'usage: cf-ytdlp <url> <output_path>' >&2
+  exit 2
+fi
+
+if ! command -v yt-dlp >/dev/null 2>&1; then
+  echo '{"event":"error","msg":"yt-dlp not installed; pip install -U yt-dlp"}' >&2
+  exit 3
+fi
+
+OUT_DIR="$(dirname "$OUT")"
+mkdir -p "$OUT_DIR"
+
+# yt-dlp progress template that emits one JSON line per tick.
+PROGRESS_TEMPLATE='{"event":"progress","pct":%(progress._percent_str)s,"eta_s":"%(progress.eta)s","downloaded":"%(progress.downloaded_bytes)s","total":"%(progress.total_bytes_estimate)s"}'
+
+# Pick best mp4-compatible stream; remux to mp4 if needed.
+yt-dlp \
+  --no-warnings \
+  --progress \
+  --newline \
+  --progress-template "$PROGRESS_TEMPLATE" \
+  -f 'bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b' \
+  --merge-output-format mp4 \
+  -o "$OUT" \
+  "$URL"
+
+echo '{"event":"done","path":"'"$OUT"'"}'

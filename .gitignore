@@ -1,0 +1,21 @@
+# env
+.env
+.env.local
+
+# ClipForge runtime state
+uploads/
+clips/
+renders/
+samples/
+
+# node
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# editor
+.DS_Store
+*.swp
+.vscode/
+.idea/

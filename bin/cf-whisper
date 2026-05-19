@@ -1,0 +1,108 @@
+#!/bin/sh
+# cf-whisper — offline transcription wrapper using whisper.cpp.
+# Falls back gracefully if whisper.cpp is not installed (we emit a clear
+# install hint rather than producing a fake transcript).
+#
+# Usage:
+#   cf-whisper --in <mp4> --out <transcript.json> --model small.en [--diarize]
+#
+# Requires:
+#   - ffmpeg (audio extraction)
+#   - whisper-cli  (from whisper.cpp; aka `main` in older builds)
+#   - jq          (JSON shaping)
+
+set -eu
+
+IN=""; OUT=""; MODEL="small.en"; DIARIZE=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --in)      IN="$2"; shift 2 ;;
+    --out)     OUT="$2"; shift 2 ;;
+    --model)   MODEL="$2"; shift 2 ;;
+    --diarize) DIARIZE=1; shift ;;
+    *) echo "cf-whisper: unknown flag $1" >&2; exit 2 ;;
+  esac
+done
+
+if [ -z "$IN" ] || [ -z "$OUT" ]; then
+  echo "usage: cf-whisper --in <mp4> --out <json> --model <name> [--diarize]" >&2
+  exit 2
+fi
+
+if ! command -v whisper-cli >/dev/null 2>&1 && ! command -v whisper >/dev/null 2>&1; then
+  echo '{"error":"whisper.cpp not installed","hint":"see https://github.com/ggerganov/whisper.cpp — clone, make, then add the binary to PATH"}' >&2
+  exit 3
+fi
+
+if ! command -v jq >/dev/null 2>&1; then
+  echo '{"error":"jq not installed","hint":"apt install jq / brew install jq"}' >&2
+  exit 3
+fi
+
+WHISPER_BIN="$(command -v whisper-cli 2>/dev/null || command -v whisper)"
+
+CACHE_DIR="${HOME}/.clip-forge/models"
+mkdir -p "$CACHE_DIR"
+MODEL_PATH="${CACHE_DIR}/ggml-${MODEL}.bin"
+
+if [ ! -f "$MODEL_PATH" ]; then
+  echo "⏳ downloading whisper model ${MODEL} to ${MODEL_PATH}" >&2
+  curl -fsSL -o "$MODEL_PATH" \
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-${MODEL}.bin" \
+    || { echo "{\"error\":\"model download failed\"}" >&2; exit 4; }
+fi
+
+TMP_DIR="$(mktemp -d -t cf-whisper-XXXX)"
+trap 'rm -rf "$TMP_DIR"' EXIT
+
+WAV="$TMP_DIR/audio.wav"
+ffmpeg -y -hide_banner -loglevel error -i "$IN" -ac 1 -ar 16000 "$WAV"
+
+JSON="$TMP_DIR/out.json"
+"$WHISPER_BIN" \
+  -m "$MODEL_PATH" \
+  -f "$WAV" \
+  -ml 1 \
+  --output-json-full \
+  -of "$TMP_DIR/out" \
+  >/dev/null
+
+# whisper.cpp writes <prefix>.json — shape it into ClipForge's canonical form.
+RAW="$TMP_DIR/out.json"
+[ -f "$RAW" ] || { echo '{"error":"whisper produced no json"}' >&2; exit 5; }
+
+mkdir -p "$(dirname "$OUT")"
+jq --arg model "$MODEL" '
+{
+  version: 1,
+  engine: "whisper",
+  language: (.result.language // "auto"),
+  duration_s: ((.transcription[-1].offsets.to // 0) / 1000),
+  speakers: [],
+  words: (
+    [ .transcription[] | .tokens[]? |
+      select(.text | test("^[^<\\[].*") )
+      | {
+          w: (.text | gsub("^\\s+|\\s+$"; "")),
+          start_ms: (.offsets.from // 0),
+          end_ms:   (.offsets.to   // 0),
+          speaker: 0,
+          confidence: (.p // 1.0)
+        }
+    ]
+  ),
+  sentences: [
+    .transcription[] | {
+      text: (.text | gsub("^\\s+|\\s+$"; "")),
+      start_ms: (.offsets.from // 0),
+      end_ms:   (.offsets.to   // 0),
+      speaker: 0,
+      sentiment: 0.0
+    }
+  ]
+}
+' "$RAW" > "$OUT"
+
+WC=$(jq '.words | length' "$OUT")
+DUR=$(jq -r '.duration_s' "$OUT")
+echo "{\"event\":\"done\",\"path\":\"${OUT}\",\"words\":${WC},\"duration_s\":${DUR}}"

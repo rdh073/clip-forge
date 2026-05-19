@@ -1,0 +1,42 @@
+{
+  "mcpServers": {
+    "deepgram": {
+      "command": "npx",
+      "args": ["-y", "@deepgram/mcp-server"],
+      "env": {
+        "DEEPGRAM_API_KEY": "${DEEPGRAM_API_KEY}"
+      }
+    },
+    "pexels": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/bin/mcp/pexels.mjs"],
+      "env": {
+        "PEXELS_API_KEY": "${PEXELS_API_KEY}"
+      }
+    },
+    "tiktok": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/bin/mcp/tiktok.mjs"],
+      "env": {
+        "TIKTOK_CLIENT_KEY": "${TIKTOK_CLIENT_KEY}",
+        "TIKTOK_CLIENT_SECRET": "${TIKTOK_CLIENT_SECRET}"
+      }
+    },
+    "youtube": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/bin/mcp/youtube.mjs"],
+      "env": {
+        "YT_CLIENT_ID": "${YT_CLIENT_ID}",
+        "YT_CLIENT_SECRET": "${YT_CLIENT_SECRET}"
+      }
+    },
+    "instagram": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/bin/mcp/instagram.mjs"],
+      "env": {
+        "IG_APP_ID": "${IG_APP_ID}",
+        "IG_APP_SECRET": "${IG_APP_SECRET}"
+      }
+    }
+  }
+}

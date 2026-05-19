@@ -1,0 +1,112 @@
+#!/usr/bin/env node
+// cf-caption-burn — turns ClipForge's captions.json + a style template
+// into an ASS subtitle file ready for ffmpeg's `ass=` filter.
+//
+// Usage:
+//   cf-caption-burn --in <captions.json> --tpl <style.json> --out <captions.ass>
+
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
+
+function die(msg, code = 1) {
+  process.stderr.write('cf-caption-burn: ' + msg + '\n');
+  process.exit(code);
+}
+
+function parseArgs(argv) {
+  const out = {};
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--in')  out.in  = argv[++i];
+    else if (a === '--tpl') out.tpl = argv[++i];
+    else if (a === '--out') out.out = argv[++i];
+  }
+  return out;
+}
+
+function msToAss(ms) {
+  const cs = Math.floor(ms / 10) % 100;
+  const s  = Math.floor(ms / 1000) % 60;
+  const m  = Math.floor(ms / 60000) % 60;
+  const h  = Math.floor(ms / 3600000);
+  return h + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0') + '.' + String(cs).padStart(2, '0');
+}
+
+function hexToAss(hex) {
+  // ASS uses &HBBGGRR& byte order.
+  const h = hex.replace('#', '').padStart(6, '0').toLowerCase();
+  return '&H00' + h.slice(4, 6) + h.slice(2, 4) + h.slice(0, 2) + '&';
+}
+
+function escapeText(t) {
+  return t.replace(/\\/g, '\\\\').replace(/\n/g, '\\N').replace(/\{/g, '\\{').replace(/\}/g, '\\}');
+}
+
+function buildAss({ captions, tpl }) {
+  const W = 1080, H = 1920;
+  const font = (captions.font) || (tpl.font && tpl.font.family) || 'Inter';
+  const sizePx = (tpl.font && tpl.font.size_px) || 72;
+  const weight = (tpl.font && tpl.font.weight) || 700;
+  const fill   = captions.brand && captions.brand.primary ? captions.brand.primary : (tpl.colors && tpl.colors.fill)    || '#ffffff';
+  const stroke = (tpl.colors && tpl.colors.stroke)   || '#000000';
+  const hi     = captions.brand && captions.brand.accent  ? captions.brand.accent  : (tpl.colors && tpl.colors.highlight) || '#ffff00';
+  const strokeWidth = (tpl.outline && tpl.outline.width_px) || 4;
+  const shadow      = (tpl.outline && tpl.outline.shadow_px) || 2;
+  const marginV = (tpl.position && tpl.position.margin_v_px) || 220;
+
+  const styleLine =
+    'Style: Default,' + font + ',' + sizePx + ',' +
+    hexToAss(fill) + ',' + hexToAss(fill) + ',' + hexToAss(stroke) + ',&H64000000&,' +
+    (weight >= 700 ? -1 : 0) + ',0,0,0,100,100,0,0,1,' +
+    strokeWidth + ',' + shadow + ',2,40,40,' + marginV + ',1';
+
+  const head = [
+    '[Script Info]',
+    'ScriptType: v4.00+',
+    'PlayResX: ' + W,
+    'PlayResY: ' + H,
+    'Collisions: Normal',
+    'WrapStyle: 0',
+    'ScaledBorderAndShadow: yes',
+    '',
+    '[V4+ Styles]',
+    'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
+    styleLine,
+    '',
+    '[Events]',
+    'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
+  ];
+
+  const events = [];
+  for (const line of captions.lines || []) {
+    const start = msToAss(line.start_ms);
+    const end   = msToAss(line.end_ms);
+    const parts = [];
+    for (const w of line.words || []) {
+      if (w.highlight) {
+        parts.push('{\\c' + hexToAss(hi) + '\\fscx108\\fscy108}' + escapeText(w.w) + '{\\c' + hexToAss(fill) + '\\fscx100\\fscy100}');
+      } else {
+        parts.push(escapeText(w.w));
+      }
+    }
+    let text = parts.join(' ');
+    if (line.emoji) text += ' ' + escapeText(line.emoji);
+    events.push('Dialogue: 0,' + start + ',' + end + ',Default,,0,0,0,,' + text);
+  }
+
+  return head.concat(events).join('\n') + '\n';
+}
+
+const opts = parseArgs(process.argv.slice(2));
+if (!opts.in || !opts.tpl || !opts.out) {
+  die('usage: cf-caption-burn --in <captions.json> --tpl <style.json> --out <captions.ass>');
+}
+
+let captions, tpl;
+try { captions = JSON.parse(readFileSync(opts.in,  'utf-8')); } catch (e) { die('read captions: ' + e.message); }
+try { tpl      = JSON.parse(readFileSync(opts.tpl, 'utf-8')); } catch (e) { die('read template: ' + e.message); }
+
+const ass = buildAss({ captions, tpl });
+mkdirSync(dirname(opts.out), { recursive: true });
+writeFileSync(opts.out, ass);
+process.stdout.write(JSON.stringify({ event: 'done', path: opts.out, lines: (captions.lines || []).length }) + '\n');

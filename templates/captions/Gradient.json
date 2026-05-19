@@ -1,0 +1,35 @@
+{
+  "name": "Gradient",
+  "inspired_by": "Multi-stop gradient fills, premium feel",
+  "font": {
+    "family": "Geist",
+    "fallback": ["Inter", "SF Pro"],
+    "weight": 800,
+    "size_px": 76,
+    "letter_spacing_px": 1
+  },
+  "colors": {
+    "fill_gradient": ["#ff0066", "#ffcc00", "#00d4ff"],
+    "fill": "#ff0066",
+    "stroke": "#000000",
+    "highlight": "#ffffff",
+    "highlight_fill": "#000000"
+  },
+  "outline": {
+    "width_px": 0,
+    "shadow_px": 0
+  },
+  "position": {
+    "alignment": "center",
+    "margin_v_px": 0,
+    "max_lines": 1
+  },
+  "animation": {
+    "enter": "scale_in",
+    "enter_duration_ms": 120,
+    "exit": "scale_out",
+    "highlight": "color_swap"
+  },
+  "emoji_strategy": "auto",
+  "words_per_line": 4
+}
