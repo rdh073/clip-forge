@@ -59,19 +59,23 @@ export async function initDetector(opts = {}) {
   if (_initPromise) return _initPromise;
 
   _initPromise = (async () => {
-    // v0.1.2: hard-disable in Node — see file header. We still validate the
-    // model file exists so users get a useful warning when they haven't run
-    // install-models, but we don't attempt to construct the MediaPipe detector.
-    const modelPath = opts.modelPath || resolve(PLUGIN_ROOT, 'bin/models/face_detector.tflite');
-    if (!existsSync(modelPath) || statSync(modelPath).size < 100_000) {
-      _disabled = true;
-      _disabledReason = 'model_missing: ' + modelPath + ' — run `node bin/install-models.mjs`';
-      return null;
-    }
-
+    // v0.1.2: hard-disable in Node — see file header. The model-missing check
+    // (kept commented below for v0.2.0 reinstatement) is intentionally bypassed
+    // because the detector itself can't run regardless of model state. Surfacing
+    // the Node-compat truth consistently means tests and users get the same
+    // signal whether or not `node bin/install-models.mjs` was run.
     _disabled = true;
     _disabledReason = 'mediapipe_not_supported_in_node: @mediapipe/tasks-vision is browser-only and currently does not run in Node. v0.2.0 swaps to a Node-compatible detector — see docs/ROADMAP.md.';
     return null;
+
+    // v0.2.0 reactivation will look like:
+    //   const modelPath = opts.modelPath || resolve(PLUGIN_ROOT, 'bin/models/<new-model>');
+    //   if (!existsSync(modelPath) || statSync(modelPath).size < 100_000) {
+    //     _disabled = true;
+    //     _disabledReason = 'model_missing: ' + modelPath + ' — run `node bin/install-models.mjs`';
+    //     return null;
+    //   }
+    //   // ...library-specific detector creation...
   })();
 
   const r = await _initPromise;

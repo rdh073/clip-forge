@@ -37,8 +37,9 @@ test('initDetector is idempotent (returns same instance on second call)', async 
   const a = await initDetector({ modelPath: '/nonexistent/path.tflite' });
   const b = await initDetector({ modelPath: '/nonexistent/path.tflite' });
   assert.equal(a, b, 'second init should return the same value as the first');
-  assert.equal(isDetectorReady(), false, 'detector should be disabled when model is missing');
-  assert.match(getDisabledReason() || '', /model_missing/, 'reason should mention model_missing');
+  assert.equal(isDetectorReady(), false, 'detector should always be disabled in v0.1.2');
+  assert.match(getDisabledReason() || '', /mediapipe_not_supported_in_node/,
+    'v0.1.2: reason should be the documented Node-compat status (was model_missing in v0.1.1; restored in v0.2.0)');
   closeDetector();
 });
 
