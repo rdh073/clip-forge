@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [master]
 
+# Opt actions/checkout + actions/setup-node into the Node.js 24 runner so
+# we stop getting the Node 20 deprecation annotation on every run. GitHub
+# will make this the default in June 2026 anyway.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   validate:
     strategy:
