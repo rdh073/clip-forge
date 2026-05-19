@@ -18,17 +18,23 @@ captions, B-roll, and a music bed — ready to publish to TikTok, Reels, Shorts,
 
 ## ✅ Status (v0.2.0)
 
-**Face-tracked reframe is working** — Ultraface RFB-320 face detection
-(`onnxruntime@ultraface-rfb-320`) followed by 68-point PFLD landmark
-extraction, both pure-ONNX, no browser dependencies, no Node-version pin
-ceiling. The v0.1.x MediaPipe gap is closed.
+**Face-tracked reframe is working end-to-end** — Ultraface RFB-320 face
+detection (`onnxruntime@ultraface-rfb-320`) → PFLD 68-point landmarks →
+IoU tracker → Kalman smoother → **animated crop** at render time. The
+v0.1.x MediaPipe gap is closed; the v0.1.x renderer's "static crop from
+samples[0] only" (CR-2) is fixed via a piecewise crop expression that
+honours the full timeline.
 
-**Known characteristics:** PFLD inference is ~60 ms per face on CPU. A
-30-minute source at 6 fps sampling processes in ~27 minutes end-to-end.
-This is the local-CLI trade-off for not needing a cloud GPU or
-subscription — see the [Performance](#performance) section. Speed-up track
-in [docs/ROADMAP.md](docs/ROADMAP.md) (int8 quantization, worker threads,
-optional GPU backend).
+**Known characteristics:**
+- PFLD inference is ~60 ms per face on CPU. A 30-minute source at 6 fps
+  sampling processes in ~27 minutes end-to-end. See [Performance](#performance).
+- The crop expression caps at 99 keyframes (ffmpeg's nested-if ceiling);
+  longer timelines are stride-downsampled with first/last preservation.
+  Kalman smoothing keeps the motion continuous; on a 30-minute source that's
+  one crop update every ~18 s, well within face-tracking bandwidth.
+  ffmpeg's `sendcmd` on the `crop` filter would let us bypass the cap but is
+  not implemented upstream — see [docs/bench-v0.2.0.md](docs/bench-v0.2.0.md)
+  Phase 2D, tracked for v0.3.0.
 
 ---
 

@@ -17,20 +17,46 @@ between minors".
 - **Renderer (cf-ffmpeg)** still reads `samples[0]` — the animated-crop
   rewrite (was CR-2) moves to v0.2.1 below.
 
-## v0.2.1 — Animated crop + success-path tests
+## ✅ Shipped in v0.2.0 (continued) — Animated crop (CR-2)
 
-- **Animated crop in the renderer (CR-2).** `bin/cf-ffmpeg` currently reads
-  `samples[0]` only. Replace with an `ffmpeg sendcmd` timeline driving the
-  `crop` filter, or a piecewise `if(lt(t, T_n), …)` expression for ≤ 60
-  keyframes. Honours the full path the reframe pipeline produces.
-- **IoU tracker module (Phase 2C).** Extract identity tracking from
-  `active-speaker.mjs._matchTracks` into `bin/lib/face-tracker.mjs`. Simple
-  IoU > 0.3 matching, deterministic, ~50 lines, mutation-test-ready.
-- **Real-face success-path test (CR-5).** Ship the talking-head fixture
-  (already on bench/v0.2.0 branch) under the proper integration test
-  asserting non-fallback detector + 68 keypoints + crop motion stddev.
+- **Crop animation via piecewise crop expression.** `bin/cf-ffmpeg`
+  consumes the full `samples[]` timeline through
+  `bin/lib/crop-expression-builder.mjs`. ffmpeg's `sendcmd` did not work on
+  the `crop` filter in our test build — confirmed `Function not implemented`
+  upstream gap. See `docs/bench-v0.2.0.md` Phase 2D for the diagnostic.
+- **99-keyframe cap with stride-downsample.** ffmpeg's expression parser
+  hard-stops at 100 nested `if(...)`. We strip to 99 first/last-preserving.
+  Note this in v0.3.0 to revisit when upstream sendcmd lands or the eval
+  cap is raised.
+- **IoU tracker module (Phase 2C).** Identity tracking moved from
+  `active-speaker.mjs._matchTracks` into `bin/lib/face-tracker.mjs`. Pure
+  IoU > 0.3 matching, deterministic.
+
+## v0.2.1 — Success-path integration tests
+
+- **Real-face success-path test (CR-5).** Wire the talking-head fixture
+  + Ultraface + PFLD chain under `tests/integration/` with explicit
+  assertions:
+    - `out.detector === 'onnxruntime@ultraface-rfb-320'` (not fallback)
+    - `out.stats.framesWithFace / out.stats.framesProcessed > 0.8`
+    - 68-point keypoints populated on every face
+    - `stddev(samples.map(s => s.cx)) > 5` (crop moves)
+- **Merge `bench/v0.2.0` → `master`, tag `v0.2.0`.** Pre-release flag OFF
+  this time (v0.2.0 ships a working feature, not a disclosure patch).
 
 ## v0.3.0 — License hardening + detection speed-up
+
+### Crop animation polish
+
+- **Revisit `ffmpeg sendcmd` on the crop filter.** Track upstream
+  (https://trac.ffmpeg.org/). When `process_command` lands for `crop`,
+  swap the expression ladder for a sendcmd timeline — smaller
+  command-lines, smoother (sendcmd interpolates), and the 99-keyframe
+  cap goes away.
+- **`between(t, a, b)` masked-sum alternative.** If sendcmd never lands,
+  benchmark a flat `X_0*between(t,0,T_1) + X_1*between(t,T_1,T_2) + …`
+  expression against the nested-if ladder — flat sums may bypass the
+  100-level nesting cap.
 
 ### Detection speedup
 

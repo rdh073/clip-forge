@@ -5,6 +5,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **CR-2:** `bin/cf-ffmpeg` now consumes the full `samples[]` timeline via a
+  piecewise crop expression. Previously, only `samples[0]` was used,
+  collapsing all Kalman / tracker / active-speaker work into a static
+  crop. The original Phase 2D spec called for `ffmpeg sendcmd` but
+  empirical test against `ffmpeg 6.1.1-3ubuntu5` showed the `crop` filter
+  returns `AVERROR(ENOSYS)` for both `x`/`y` and generic `reinit` commands —
+  documented upstream gap, not packaging. See `docs/bench-v0.2.0.md`
+  Phase 2D for the trace logs.
+
+### Added
+
+- `bin/lib/crop-expression-builder.mjs` — `computeCropDims`, `buildCropExpression`,
+  `buildFilterArg`, `buildFilterScript`, `chooseRenderMode`, `escapeFilterArg`.
+  20 unit tests covering coordinate transform, clamping, dedupe, stride-downsample,
+  filter-script routing, and the 99-keyframe ffmpeg expression ceiling.
+- `bin/cf-ffmpeg reframe-animated` — stand-alone crop-only renderer that takes
+  `--crop-path`/`--source`/`--output` flags. Decoupled from the manifest-driven
+  full-pipeline `render` subcommand for testing.
+- `chooseRenderMode` routes between `static` (≤1 keyframe), `inline` (<100 KB
+  expression), and `filter-script` (≥100 KB) modes. Threshold is overridable.
+- `bin/lib/face-tracker.mjs` — IoU-based identity tracker (8 unit tests).
+- `bin/lib/landmark-detector.mjs` — PFLD 68-point ONNX wrapper (Phase 2B).
+- `tests/fixtures/talking-head-5s.mp4` — 5-pose CGI synth fixture (188 KB) for
+  end-to-end smoke testing.
+
+
 ## [0.1.2] - 2026-05-19
 
 ### Fixed

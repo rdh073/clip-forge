@@ -257,6 +257,85 @@ Detection rate 100% on the synth talking-head fixture (5 pose changes × 6 fps
 sampling = 30 frames). Crop center varies 34 px across the clip, well above
 the > 5 px target.
 
+## Phase 2D — Crop animation: expression mode (sendcmd ditolak)
+
+The plan called for `ffmpeg sendcmd` to drive per-frame crop position updates
+on a labeled `crop@cf` filter. **It didn't work** in our test ffmpeg
+(`ffmpeg 6.1.1-3ubuntu5`). The smoke test exposed the upstream gap:
+
+```
+[Parsed_sendcmd_0]  Command reply for command #0: ret:Function not implemented res:
+```
+
+Both the direct `cf x N`/`cf y N` commands and the generic `cf reinit
+w=…:h=…:x=…:y=…` form returned `AVERROR(ENOSYS)` despite the AVOption
+table flagging `x`/`y` as runtime-settable (`..T.` flag). Confirmed with
+verbose trace logging on three independent `.cmd` files. Frame hashes at
+`t=1.5` and `t=2.5` were identical after sendcmd commands "fired" —
+proving the crop filter ignored them.
+
+### Option B (expression mode) — what we shipped
+
+Single `crop=W:H:exprX:exprY,scale=tw:th` filter where `exprX`/`exprY` are
+piecewise step functions of `t`:
+
+```
+crop=608:1080:if(lt(t,0.167),656,if(lt(t,0.333),648,…405)):if(…),scale=1080:1920
+```
+
+ffmpeg evaluates the expressions every frame. The `lt(t, T_n)` ladder
+returns the latest sample's coordinate when time falls into its bucket.
+
+### Empirical ceiling: 99 keyframes
+
+ffmpeg's `eval.c` caps nested `if(...)` at 100 levels. We bisected this
+in `scripts/bench-detectors/`-style fashion: **99 nested ifs parse,
+100 returns `Missing ')' or too many args`**. Confirmed with a 1-step
+binary search.
+
+**Mitigation**: `buildCropExpression` strides any post-dedupe timeline
+of length > 99 down to 99 keyframes, preserving first and last
+positions. The Kalman smoother already produces continuous motion, so 99
+evenly-spread keyframes deliver visibly smooth tracking for any clip
+length — for a 30-minute source at 6 fps that's one keyframe every
+~18 s, well within the smoother's bandwidth.
+
+`buildCropExpression` returns `downsampled: true | false` and
+`originalKeyframeCount` so callers can surface the cap firing.
+
+### filter_complex_script: kept, but rarely engaged
+
+We retained `-filter_complex_script` mode for cases where the post-cap
+expression still exceeds 100 KB on the command line (would only happen
+with a pathologically wide downsample target). In practice, capped
+99-keyframe expressions sit around 1.5-9 KB and stay inline.
+
+### Coordinate transform — root cause of one mid-build bug
+
+The first attempt used `target_w`/`target_h` directly as the crop
+dimensions and clamped against `source_w - target_w`. That broke
+immediately on a 640×360 downsampled source rendering to a 1080×1920
+target — the "crop" larger than the source itself.
+
+Corrected: crop dimensions are **always SOURCE-pixel sized** at the
+target's aspect ratio. For 640×360 → 1080×1920 (9:16), crop = 203×360
+(taking full source height, narrower width to match aspect). The
+`scale=1080:1920` filter then expands the crop to target. Captured in
+`computeCropDims()` and exercised by 4 unit tests including the acid
+test for the smoke-regression case.
+
+### Acceptance check on `tests/fixtures/talking-head-5s.mp4`
+
+| Check | Result |
+|---|---|
+| `cf-ffmpeg reframe-animated` exits 0 | ✓ |
+| Output is 1080×1920, 5.000 s | ✓ |
+| 3 sampled frames (t=1.0, 2.5, 4.0) have **distinct** sha256 | ✓ `dfc99d…` vs `e2e279…` vs `e610cf…` |
+| Stress test on 7000-sample synth → downsample → render | ✓ exits 0; 3 distinct sampled hashes (`fdd01b…` / `be32d4…` / `8b15dd…`) |
+| Temp `filter_complex_script` file cleaned up | ✓ verified |
+| `npm test` | ✓ 53 pass, 2 skipped |
+| `claude plugin validate .` | ✓ |
+
 ## Next-step gating
 
 Phase 1 awaits explicit approval before swapping the library. The pick
