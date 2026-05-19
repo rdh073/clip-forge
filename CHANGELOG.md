@@ -5,6 +5,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-05-20
+
+### Added
+
+- Code of Conduct (Contributor Covenant v2.1).
+- `CONTRIBUTING.md` with setup, conventional-commits requirement, PR
+  checklist, and triage policy.
+- `SECURITY.md` reporting flow via GitHub Security Advisories.
+- Issue forms — `.github/ISSUE_TEMPLATE/{bug_report,feature_request,config}.yml`
+  — and `.github/PULL_REQUEST_TEMPLATE.md`.
+
+### Notes
+
+- No code changes. Functionally identical to v0.1.0.
+- Raises GitHub Community Standards score from 42 % to ≥ 90 %, unblocking
+  community-marketplace submission.
+
+## [0.1.0] - 2026-05-20
+
 ### Added — face-tracked reframe (`bin/cf-reframe` v2)
 
 - Real MediaPipe BlazeFace short-range integration replacing the v0.1.0
@@ -31,22 +50,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   surface remains valid for backwards compatibility.
 - Robustness layer: detector init wrapped in try/catch with graceful
   degradation, per-frame 200 ms soft budget with skip-next cooldown,
-  >50% no-face yield → center-crop fallback, partial extraction handling
+  >50 % no-face yield → center-crop fallback, partial extraction handling
   on mid-stream ffmpeg errors. Exit code 0 in every failure mode.
 - `crop_path.json` bumped to `version: 2`. New fields: `detector`, `stats`,
   `speaker_map`. The v1 sample shape (`samples[].cx/cy/scale/letterbox`)
   is preserved so `bin/cf-ffmpeg render` consumes both versions unchanged.
-- Test suite (`npm test`) — 18 passing + 2 skipped: parseSpeakerMap variants,
-  switching damper hold/release, auto-calibration median picking,
+- Test suite (`npm test`) — 22 passing + 2 skipped: `parseSpeakerMap`
+  variants, switching damper hold/release, auto-calibration median picking,
   deterministic scoring, detector idempotency, integration tests that
   generate a 5 s testsrc video and validate schema + fallback path. CI
   matrix now includes macOS in addition to Ubuntu.
 - Docs: README "Reframe & active speaker" section, blueprint defaults entry,
   `tests/fixtures/README.md` for the bring-your-own-PNG fixture flow.
 
-### Added
+### Added — initial public scaffold
 
-- Initial public scaffold of the ClipForge Claude Code plugin.
 - Manifest, settings, README with architecture diagram.
 - Entry skill `/clip-forge:start` orchestrating the full pipeline.
 - Onboarding wizard `/clip-forge:onboard` writing `~/.clip-forge/profile.json`.
@@ -63,7 +81,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Monitors: `render-queue`, `publish-queue`, `new-uploads`.
 - Caption templates: Beast, Submagic-Pop, Karaoke, Neon, Gradient.
 - Thumbnail Remotion composition.
-- CI: `claude plugin validate` + JSON/JS/sh syntax checks on every PR.
+- CI: `claude plugin validate` + JSON / JS / sh syntax checks on every PR.
+- LICENSE (MIT), placeholder demo GIF, marketplace.json snippet.
 
 ### Known limitations
 
@@ -75,7 +94,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   sync call without worker threads. The cooldown-skip strategy keeps slow
   frames from cascading but a single frame can still block briefly.
 - No intro stingers ship by default; users provide their own.
-
-## [0.1.0] - 2026-05-20
-
-Initial development tag.

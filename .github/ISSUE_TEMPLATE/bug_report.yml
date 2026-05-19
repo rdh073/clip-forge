@@ -1,0 +1,85 @@
+name: 🐛 Bug report
+description: File a bug report against ClipForge.
+title: "[bug] "
+labels: [bug, triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug! Please complete every field
+        so we can reproduce the issue quickly. Reports without a reproduction
+        case will be labeled `needs-repro`.
+
+  - type: input
+    id: version
+    attributes:
+      label: clip-forge version
+      description: From `cat .claude-plugin/plugin.json` or your release tag.
+      placeholder: e.g. 0.1.1
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+        - WSL2
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: node
+    attributes:
+      label: Node.js version
+      description: Output of `node --version`.
+      placeholder: e.g. v20.18.0
+    validations:
+      required: true
+
+  - type: input
+    id: ffmpeg
+    attributes:
+      label: ffmpeg version
+      description: First line of `ffmpeg -version`.
+      placeholder: e.g. ffmpeg version 6.1.1
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      description: Exact commands or actions, in order. The simpler the better.
+      placeholder: |
+        1. `node bin/cf-reframe ./source.mp4 --output ./crop.json`
+        2. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual behaviour
+      placeholder: |
+        Expected: ...
+        Actual:   ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / output
+      description: Paste relevant terminal output. Use `--json-logs` if invoking cf-reframe.
+      render: shell
+
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Prerequisites
+      options:
+        - label: I have run `node bin/install-models.mjs`
+        - label: I have run `npm install`
+        - label: `claude plugin validate .` passes on my machine
