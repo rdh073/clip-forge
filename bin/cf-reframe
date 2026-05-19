@@ -253,27 +253,50 @@ async function detectPath(opts, srcW, srcH, targetW, targetH) {
 
   if (opts.debug) mkdirSync('./debug', { recursive: true });
 
+  const FRAME_BUDGET_MS = 200; // soft per-frame budget; see Phase F notes in CHANGELOG
   const raw = [];
   let framesProcessed = 0;
   let framesWithFace = 0;
+  let framesSlow = 0;
   let lastGood = null;
   let lastDebugFrame = -30;
+  let skipDetectFor = 0; // cooldown: skip detect on next N frames after a slow one
 
-  for await (const frame of extractFrames({
-    input: opts.in,
-    sampleFps: opts.fps,
-    startMs: opts.startMs,
-    endMs: opts.endMs,
-  })) {
-    framesProcessed++;
-    let faces = [];
-    try {
-      faces = detectFaces(frame.rgb, frame.width, frame.height, frame.tMs,
-                          frame.sourceWidth, frame.sourceHeight);
-    } catch { faces = []; }
+  let extractorOk = true;
+  let extractorErr = null;
 
-    const ctx = { tMs: frame.tMs, frameWidth: frame.sourceWidth, frameHeight: frame.sourceHeight };
-    const pick = tracker.pickActiveFace(faces, ctx);
+  try {
+    for await (const frame of extractFrames({
+      input: opts.in,
+      sampleFps: opts.fps,
+      startMs: opts.startMs,
+      endMs: opts.endMs,
+    })) {
+      framesProcessed++;
+      let faces = [];
+      let elapsed = 0;
+      if (skipDetectFor > 0) {
+        skipDetectFor--;
+        // Pretend no face detected; rely on last-known-good.
+      } else {
+        const t0 = Date.now();
+        try {
+          faces = detectFaces(frame.rgb, frame.width, frame.height, frame.tMs,
+                              frame.sourceWidth, frame.sourceHeight);
+        } catch (e) {
+          faces = [];
+          jlog(opts, { event: 'frame_detect_threw', t_ms: frame.tMs, error: e.message });
+        }
+        elapsed = Date.now() - t0;
+        if (elapsed > FRAME_BUDGET_MS) {
+          framesSlow++;
+          skipDetectFor = Math.min(4, Math.ceil(elapsed / FRAME_BUDGET_MS));
+          jlog(opts, { event: 'frame_over_budget', t_ms: frame.tMs, elapsed_ms: elapsed, skip_next: skipDetectFor });
+        }
+      }
+
+      const ctx = { tMs: frame.tMs, frameWidth: frame.sourceWidth, frameHeight: frame.sourceHeight };
+      const pick = tracker.pickActiveFace(faces, ctx);
 
     if (pick.face) {
       framesWithFace++;
@@ -297,13 +320,26 @@ async function detectPath(opts, srcW, srcH, targetW, targetH) {
       }
     }
 
-    jlog(opts, { event: 'frame', t_ms: frame.tMs, faces: faces.length,
-                 chosen: !!pick.face, faceId: pick.faceId, scores: pick.scores });
+      jlog(opts, { event: 'frame', t_ms: frame.tMs, faces: faces.length,
+                   chosen: !!pick.face, faceId: pick.faceId, scores: pick.scores,
+                   elapsed_ms: elapsed });
+    }
+  } catch (e) {
+    extractorOk = false;
+    extractorErr = e.message;
+    jlog(opts, { event: 'extractor_error', error: e.message });
   }
 
-  if (framesProcessed === 0) return { samples: null, reason: 'no_frames_extracted' };
+  if (framesProcessed === 0) {
+    return { samples: null, reason: extractorErr ? 'extractor_error: ' + extractorErr : 'no_frames_extracted' };
+  }
   if (framesWithFace / framesProcessed < 0.5) {
-    return { samples: null, reason: 'low_face_yield: ' + framesWithFace + '/' + framesProcessed };
+    return { samples: null, reason: 'low_face_yield: ' + framesWithFace + '/' + framesProcessed,
+             framesProcessed, framesWithFace, framesSlow };
+  }
+  if (!extractorOk) {
+    jlog(opts, { event: 'partial_extraction', framesProcessed });
+    // Continue with what we have — partial is better than nothing.
   }
 
   const cxs = kalman1d(raw.map((r) => r.cx));
@@ -318,7 +354,7 @@ async function detectPath(opts, srcW, srcH, targetW, targetH) {
   }));
   samples = clampVelocity(samples, opts.maxPanPxS);
 
-  return { samples, framesProcessed, framesWithFace, speakerMap };
+  return { samples, framesProcessed, framesWithFace, framesSlow, speakerMap, extractorOk };
 }
 
 (async () => {
@@ -355,8 +391,20 @@ async function detectPath(opts, srcW, srcH, targetW, targetH) {
       samples = r.samples;
       reason = r.reason || null;
       if (r.samples) {
-        stats = { framesProcessed: r.framesProcessed, framesWithFace: r.framesWithFace };
+        stats = {
+          framesProcessed: r.framesProcessed,
+          framesWithFace: r.framesWithFace,
+          framesSlow: r.framesSlow || 0,
+          extractorOk: r.extractorOk !== false,
+        };
         resolvedMap = r.speakerMap || null;
+      } else if (r.framesProcessed) {
+        // Even when falling back, record the stats — useful for debugging.
+        stats = {
+          framesProcessed: r.framesProcessed,
+          framesWithFace: r.framesWithFace || 0,
+          framesSlow: r.framesSlow || 0,
+        };
       }
     } catch (e) {
       reason = 'detect_threw: ' + e.message;
