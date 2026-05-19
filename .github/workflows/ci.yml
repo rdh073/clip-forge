@@ -8,7 +8,11 @@ on:
 
 jobs:
   validate:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+      fail-fast: false
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -20,13 +24,16 @@ jobs:
       - name: Install Claude Code CLI
         run: npm install -g @anthropic-ai/claude-code
 
+      - name: Install plugin deps
+        run: npm install --no-audit --no-fund
+
       - name: Validate plugin manifest
         run: claude plugin validate .
 
       - name: Lint JSON files
         run: |
           set -e
-          for f in .claude-plugin/plugin.json settings.json .mcp.json hooks/hooks.json monitors/monitors.json templates/captions/*.json; do
+          for f in .claude-plugin/plugin.json settings.json .mcp.json hooks/hooks.json monitors/monitors.json package.json marketplace.json templates/captions/*.json; do
             node -e "JSON.parse(require('fs').readFileSync('$f','utf8'))" && echo "ok $f"
           done
 
@@ -50,3 +57,14 @@ jobs:
           for f in bin/cf-ffmpeg bin/cf-reframe bin/cf-caption-burn; do
             node --check "$f" && echo "ok $f"
           done
+
+      - name: Install ffmpeg (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install ffmpeg (macOS)
+        if: matrix.os == 'macos-latest'
+        run: brew install ffmpeg
+
+      - name: Run tests
+        run: npm test

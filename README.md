@@ -130,6 +130,87 @@ Pass `--yolo` to skip every approval gate and ship 10 clips unattended:
    └──────────────────────────┘
 ```
 
+## Reframe & active speaker
+
+`bin/cf-reframe` does the 16:9 → 9:16 cropping. Under the hood it pipes
+downsampled RGB frames out of ffmpeg, runs MediaPipe **BlazeFace
+short-range** for detection, applies a weighted active-speaker scorer over
+four cues (audio, mouth motion, centrality, confidence), and feeds the
+chosen face center into a Kalman smoother + velocity clamp before writing
+the crop path.
+
+### One-time setup
+
+```bash
+npm install                           # pulls @mediapipe/tasks-vision
+node bin/install-models.mjs           # downloads BlazeFace short-range (~230 KB)
+```
+
+The model lands at `bin/models/face_detector.tflite` (gitignored). The
+SessionStart hook warns if the file is missing.
+
+### Common invocations
+
+```bash
+# Simplest — defaults pick the most-likely speaker per frame:
+node bin/cf-reframe ./source.mp4 --output ./crop.json
+
+# With a transcript for the audio cue (auto-calibrate speaker→face map):
+node bin/cf-reframe ./source.mp4 --output ./crop.json \
+  --transcript ./transcript.json --speaker-map auto
+
+# Explicit map (left=speaker 0, right=speaker 1):
+node bin/cf-reframe ./source.mp4 --output ./crop.json \
+  --transcript ./transcript.json --speaker-map "0:left,1:right"
+
+# Single speaker / no active-speaker logic — just track the most confident face:
+node bin/cf-reframe ./source.mp4 --output ./crop.json --no-active-speaker
+
+# Render at a different aspect:
+node bin/cf-reframe ./source.mp4 --output ./crop.json --target-aspect 1:1
+
+# Debug: dump a PPM frame every 30 detections with bbox + keypoint overlay:
+node bin/cf-reframe ./source.mp4 --output ./crop.json --debug
+
+# Stream NDJSON per-frame events to stdout (useful for monitors / dashboards):
+node bin/cf-reframe ./source.mp4 --output ./crop.json --json-logs
+```
+
+### Score weights
+
+Default weights are `audio=0.3, mouth=0.5, central=0.1, confidence=0.1`.
+When `--transcript` / `--speaker-map` aren't supplied, the audio weight is
+dropped and the rest auto-renormalize. Override with:
+
+```bash
+--weights 0.3,0.5,0.1,0.1     # audio,mouth,central,confidence
+```
+
+### Graceful degradation
+
+| Condition                              | Behavior                                              |
+|----------------------------------------|-------------------------------------------------------|
+| `bin/models/face_detector.tflite` missing | Fall back to center-crop, record reason in metadata |
+| `@mediapipe/tasks-vision` import fails  | Fall back to center-crop                              |
+| Detector throws on a single frame       | Skip that frame, coast on last-known-good             |
+| One frame takes >200ms                  | Soft skip the next 1–4 frames as cooldown             |
+| <50% of frames yield a face             | Fall back to center-crop with `low_face_yield` reason |
+| ffmpeg dies mid-stream                  | Use the frames we got; mark as partial extraction     |
+
+In every case, `cf-reframe` exits 0 and writes a valid `crop_path.json` so
+`bin/cf-ffmpeg render` never breaks.
+
+### Troubleshooting
+
+| Symptom                              | Fix                                                    |
+|--------------------------------------|--------------------------------------------------------|
+| `model_missing` in fallback_reason   | `node bin/install-models.mjs`                          |
+| `mediapipe_import_failed`            | `npm install` in plugin root                           |
+| `wasm_path_unresolved`               | Reinstall `@mediapipe/tasks-vision`                    |
+| `low_face_yield` on a single-speaker video | Lower `--min-confidence` (default 0.5) or check lighting |
+| Crop pans too aggressively           | Lower `--max-pan-px-s` (default 80)                    |
+| Wrong speaker chosen                 | Pass `--speaker-map "0:left,1:right"` explicitly       |
+
 ## File layout in your project
 
 ```
