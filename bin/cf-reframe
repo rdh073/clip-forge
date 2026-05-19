@@ -210,8 +210,8 @@ async function collectLeadIn(opts) {
   })) {
     let faces = [];
     try {
-      faces = detectFaces(frame.rgb, frame.width, frame.height, frame.tMs,
-                          frame.sourceWidth, frame.sourceHeight);
+      faces = await detectFaces(frame.rgb, frame.width, frame.height, frame.tMs,
+                                frame.sourceWidth, frame.sourceHeight);
     } catch { /* ignore per-frame */ }
     samples.push({ tMs: frame.tMs, faces });
   }
@@ -286,8 +286,8 @@ async function detectPath(opts, srcW, srcH, targetW, targetH) {
       } else {
         const t0 = Date.now();
         try {
-          faces = detectFaces(frame.rgb, frame.width, frame.height, frame.tMs,
-                              frame.sourceWidth, frame.sourceHeight);
+          faces = await detectFaces(frame.rgb, frame.width, frame.height, frame.tMs,
+                                    frame.sourceWidth, frame.sourceHeight);
         } catch (e) {
           faces = [];
           jlog(opts, { event: 'frame_detect_threw', t_ms: frame.tMs, error: e.message });
@@ -387,7 +387,7 @@ async function detectPath(opts, srcW, srcH, targetW, targetH) {
   let samples = null;
   let fallback = false;
   let reason = null;
-  let detectorLabel = 'mediapipe@blazeface-short';
+  let detectorLabel = 'onnxruntime@ultraface-rfb-320';
   let stats = null;
   let resolvedMap = null;
 

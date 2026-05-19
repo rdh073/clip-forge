@@ -1,11 +1,9 @@
 #!/usr/bin/env node
-// install-models.mjs — fetches the model files cf-reframe expects on disk.
+// install-models.mjs — fetches the ONNX models cf-reframe needs at runtime.
 //
-// v0.1.2 note: face detection is currently disabled at the bin/lib/face-detector.mjs
-// layer (see docs/ROADMAP.md for the v0.2.0 library swap). The model download
-// here stays in place so the install command + preflight check remain
-// meaningful — the .tflite is small (~230 KB) and the v0.2.0 library swap may
-// reuse it.
+// v0.2.0:
+//   • bin/models/face_detector.onnx  — Ultraface RFB-320 (~1.5 MB)
+//   • bin/models/face_landmark.onnx  — PFLD 68-point (added in Phase 2B)
 //
 // Usage:
 //   node bin/install-models.mjs           # fetch what's missing
@@ -21,10 +19,10 @@ const MODELS_DIR = join(ROOT, 'bin', 'models');
 
 const MODELS = [
   {
-    name: 'face_detector.tflite',
-    url: 'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/latest/blaze_face_short_range.tflite',
-    expected_min_bytes: 200_000,
-    expected_max_bytes: 400_000,
+    name: 'face_detector.onnx',
+    url: 'https://github.com/onnx/models/raw/main/validated/vision/body_analysis/ultraface/models/version-RFB-320.onnx',
+    expected_min_bytes: 700_000,
+    expected_max_bytes: 2_500_000,
   },
 ];
 

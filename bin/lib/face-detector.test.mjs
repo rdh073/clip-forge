@@ -37,9 +37,9 @@ test('initDetector is idempotent (returns same instance on second call)', async 
   const a = await initDetector({ modelPath: '/nonexistent/path.tflite' });
   const b = await initDetector({ modelPath: '/nonexistent/path.tflite' });
   assert.equal(a, b, 'second init should return the same value as the first');
-  assert.equal(isDetectorReady(), false, 'detector should always be disabled in v0.1.2');
-  assert.match(getDisabledReason() || '', /mediapipe_not_supported_in_node/,
-    'v0.1.2: reason should be the documented Node-compat status (was model_missing in v0.1.1; restored in v0.2.0)');
+  assert.equal(isDetectorReady(), false, 'detector should be disabled when model path is bogus');
+  assert.match(getDisabledReason() || '', /model_missing/,
+    'reason should mention model_missing for a bogus modelPath');
   closeDetector();
 });
 
@@ -50,10 +50,10 @@ test('closeDetector resets state so initDetector can run again', async () => {
   assert.equal(getDisabledReason(), null);
 });
 
-test('detectFaces returns [] when detector is not ready', () => {
+test('detectFaces returns [] when detector is not ready', async () => {
   closeDetector();
   const fakeRgb = new Uint8Array(64 * 48 * 3);
-  const out = detectFaces(fakeRgb, 64, 48, 0, 1920, 1080);
+  const out = await detectFaces(fakeRgb, 64, 48, 0, 1920, 1080);
   assert.deepEqual(out, []);
 });
 

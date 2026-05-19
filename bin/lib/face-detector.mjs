@@ -1,81 +1,93 @@
-// face-detector.mjs — singleton wrapper around @mediapipe/tasks-vision's
-// FaceDetector (BlazeFace short-range). Designed to be init-once, reuse for
-// every frame, and degrade gracefully when MediaPipe can't load (missing
-// model, WASM runtime issue, etc).
+// face-detector.mjs — Ultraface RFB-320 face detector via onnxruntime-node.
 //
-// Coordinates returned are in the *source* image frame, not the downsampled
-// one — callers pass the downsample factor so we can up-project.
+// v0.2.0 reactivation: replaces the v0.1.x @mediapipe/tasks-vision integration
+// (browser-only, didn't run in Node). Now uses a pure-ONNX path with
+// onnxruntime-node + sharp — works on every Node ≥ 20, no engine ceiling.
 //
-// Public API:
-//   await initDetector({ modelPath, minConfidence?, runningMode? })
-//   detectFaces(rgbBytes, width, height, tMs, sourceScale = 1) → Face[]
+// Public API (unchanged shape from v0.1.x):
+//   await initDetector({ modelPath?, minConfidence? })
+//   isDetectorReady() → boolean
+//   getDisabledReason() → string|null
+//   await detectFaces(rgbBytes, width, height, tMs, srcWidth, srcHeight) → Face[]
 //   closeDetector()
 //
 // where Face = {
-//   x, y,            // bbox center in SOURCE coords
-//   w, h,            // bbox dims in SOURCE coords
-//   confidence,      // 0..1
-//   keypoints: { right_eye, left_eye, nose, mouth, right_ear, left_ear } each {x,y} in SOURCE coords
+//   x, y, w, h         // bbox center + dims in SOURCE coords
+//   confidence         // 0..1
+//   keypoints          // {} in Phase 2A (Ultraface = boxes only).
+//                      // Phase 2B will populate {right_eye, left_eye, nose, mouth, ...}
+//                      // via a PFLD landmark stage.
 // }
+//
+// Note: detectFaces is now `async` (was sync in v0.1.x). All callers in
+// cf-reframe were already inside an async loop; the change is transparent
+// after adding `await`.
 
-// v0.1.2 STATUS — known broken in Node:
-//
-// @mediapipe/tasks-vision is a browser-first SDK. It mounts DOM nodes
-// (document.createElement('canvas'), document.body.appendChild, ...) during
-// FaceDetector.createFromOptions() with no Node-detection branches. Shimming
-// is whack-a-mole and was abandoned in favour of a library swap planned for
-// v0.2.0 (see docs/ROADMAP.md).
-//
-// This module is kept so cf-reframe's pipeline shape stays intact, but
-// initDetector() ALWAYS marks the detector disabled with reason
-// "node_unsupported". Every cf-reframe invocation therefore falls back to
-// center-crop with an explicit reason in crop_path.json.fallback_reason.
-//
-// The pure-JS pieces in this file (rgbToRgba, mapKeypoints, coordinate
-// up-projection) will be reused when v0.2.0 swaps in @vladmandic/human or
-// similar.
-
-import { existsSync, statSync, readFileSync } from 'node:fs';
-import { resolve, dirname, join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { existsSync, statSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import * as ort from 'onnxruntime-node';
+import sharp from 'sharp';
 
 const PLUGIN_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 
-let _detector = null;
+// Ultraface RFB-320 input dimensions.
+const MODEL_W = 320;
+const MODEL_H = 240;
+const HW = MODEL_H * MODEL_W;
+
+// Detection + NMS thresholds. Match the conservative defaults the bench used.
+const DEFAULT_SCORE_THRESHOLD = 0.7;
+const NMS_IOU_THRESHOLD = 0.3;
+
+let _session = null;
 let _initPromise = null;
 let _disabled = false;
 let _disabledReason = null;
+let _scoreThreshold = DEFAULT_SCORE_THRESHOLD;
+let _inputName = 'input';
+let _scoresKey = 'scores';
+let _boxesKey = 'boxes';
 
 /**
  * Initialize the singleton detector. Safe to call multiple times — only the
- * first call performs work; subsequent calls await the same promise.
- *
- * Never throws — on failure marks the detector "disabled" and `detectFaces`
- * returns []. Callers should check `isDetectorReady()` if they care.
+ * first call performs work. Never throws — on failure, the detector is
+ * marked disabled and detectFaces() returns []. Inspect `getDisabledReason()`
+ * to see why.
  */
 export async function initDetector(opts = {}) {
-  if (_detector) return _detector;
+  if (_session) return _session;
   if (_disabled) return null;
   if (_initPromise) return _initPromise;
 
-  _initPromise = (async () => {
-    // v0.1.2: hard-disable in Node — see file header. The model-missing check
-    // (kept commented below for v0.2.0 reinstatement) is intentionally bypassed
-    // because the detector itself can't run regardless of model state. Surfacing
-    // the Node-compat truth consistently means tests and users get the same
-    // signal whether or not `node bin/install-models.mjs` was run.
-    _disabled = true;
-    _disabledReason = 'mediapipe_not_supported_in_node: @mediapipe/tasks-vision is browser-only and currently does not run in Node. v0.2.0 swaps to a Node-compatible detector — see docs/ROADMAP.md.';
-    return null;
+  _scoreThreshold = opts.minConfidence ?? DEFAULT_SCORE_THRESHOLD;
 
-    // v0.2.0 reactivation will look like:
-    //   const modelPath = opts.modelPath || resolve(PLUGIN_ROOT, 'bin/models/<new-model>');
-    //   if (!existsSync(modelPath) || statSync(modelPath).size < 100_000) {
-    //     _disabled = true;
-    //     _disabledReason = 'model_missing: ' + modelPath + ' — run `node bin/install-models.mjs`';
-    //     return null;
-    //   }
-    //   // ...library-specific detector creation...
+  _initPromise = (async () => {
+    const modelPath = opts.modelPath || resolve(PLUGIN_ROOT, 'bin/models/face_detector.onnx');
+    if (!existsSync(modelPath) || statSync(modelPath).size < 500_000) {
+      _disabled = true;
+      _disabledReason = 'model_missing: ' + modelPath + ' — run `node bin/install-models.mjs`';
+      return null;
+    }
+
+    try {
+      _session = await ort.InferenceSession.create(modelPath, {
+        executionProviders: ['cpu'],
+      });
+      // Be defensive about the input/output names — Ultraface uses 'input',
+      // 'scores', 'boxes' but other ONNX exports may differ.
+      if (_session.inputNames && _session.inputNames.length > 0) _inputName = _session.inputNames[0];
+      const outNames = _session.outputNames || [];
+      const scoresCandidate = outNames.find((n) => /score/i.test(n));
+      const boxesCandidate  = outNames.find((n) => /box/i.test(n));
+      if (scoresCandidate) _scoresKey = scoresCandidate;
+      if (boxesCandidate)  _boxesKey  = boxesCandidate;
+      return _session;
+    } catch (e) {
+      _disabled = true;
+      _disabledReason = 'detector_create_failed: ' + e.message;
+      return null;
+    }
   })();
 
   const r = await _initPromise;
@@ -83,92 +95,115 @@ export async function initDetector(opts = {}) {
   return r;
 }
 
-export function isDetectorReady() { return !!_detector; }
+export function isDetectorReady() { return !!_session; }
 export function getDisabledReason() { return _disabledReason; }
 
 /**
- * Run the detector on a single frame. Returns an array of Face objects with
- * coordinates already up-projected to the source frame size (caller supplies
- * sourceWidth/sourceHeight).
+ * Run the detector on a single frame.
  *
- * @param {Uint8Array} rgbBytes      Width*Height*3 RGB bytes
- * @param {number}     width         Width of the rgbBytes frame (downsampled)
- * @param {number}     height        Height of the rgbBytes frame (downsampled)
- * @param {number}     tMs           Frame timestamp in ms (must be monotonically increasing for VIDEO mode)
- * @param {number}     sourceWidth   Original source width (for coord up-projection)
- * @param {number}     sourceHeight  Original source height
+ * @param {Uint8Array|Buffer} rgbBytes  width*height*3 RGB
+ * @param {number} width   frame width (downsampled)
+ * @param {number} height  frame height (downsampled)
+ * @param {number} tMs     frame timestamp (unused by Ultraface but kept for API parity)
+ * @param {number} sourceWidth   original source width (for bbox up-projection)
+ * @param {number} sourceHeight  original source height
  */
-export function detectFaces(rgbBytes, width, height, tMs, sourceWidth, sourceHeight) {
-  if (!_detector) return [];
-  const sx = sourceWidth / width;
-  const sy = sourceHeight / height;
+export async function detectFaces(rgbBytes, width, height, tMs, sourceWidth, sourceHeight) {
+  if (!_session) return [];
 
-  // MediaPipe Tasks Vision accepts an ImageData-like bag: { data, width, height }
-  // where data is RGBA. So we expand RGB→RGBA on the fly.
-  const rgba = rgbToRgba(rgbBytes, width, height);
-  const imageData = { data: rgba, width, height };
-
-  let res;
+  let resized;
   try {
-    res = _detector.detectForVideo(imageData, tMs);
-  } catch (e) {
-    // Don't poison subsequent frames; just drop this one.
+    resized = await sharp(Buffer.from(rgbBytes.buffer, rgbBytes.byteOffset, rgbBytes.byteLength), {
+      raw: { width, height, channels: 3 },
+    })
+      .resize(MODEL_W, MODEL_H, { fit: 'fill' })
+      .raw()
+      .toBuffer();
+  } catch {
     return [];
   }
 
-  const detections = (res && res.detections) || [];
-  return detections.map((d) => {
-    const bb = d.boundingBox || {};
-    const cx = (bb.originX + bb.width / 2) * sx;
-    const cy = (bb.originY + bb.height / 2) * sy;
-    const kp = mapKeypoints(d.keypoints || [], width, height, sx, sy);
-    const cat = (d.categories || [])[0];
+  // Normalize HWC RGB → CHW Float32, mean-subtract 127, scale 1/128.
+  const chw = new Float32Array(3 * HW);
+  for (let y = 0; y < MODEL_H; y++) {
+    for (let x = 0; x < MODEL_W; x++) {
+      const i = (y * MODEL_W + x) * 3;
+      const j = y * MODEL_W + x;
+      chw[0 * HW + j] = (resized[i + 0] - 127) / 128;
+      chw[1 * HW + j] = (resized[i + 1] - 127) / 128;
+      chw[2 * HW + j] = (resized[i + 2] - 127) / 128;
+    }
+  }
+  const tensor = new ort.Tensor('float32', chw, [1, 3, MODEL_H, MODEL_W]);
+
+  let scoresArr, boxesArr;
+  try {
+    const out = await _session.run({ [_inputName]: tensor });
+    scoresArr = out[_scoresKey].data;
+    boxesArr  = out[_boxesKey].data;
+  } catch {
+    return [];
+  }
+
+  // Decode scores (N, 2) + boxes (N, 4). Score index 1 = face class.
+  const N = scoresArr.length / 2;
+  const candidates = [];
+  for (let i = 0; i < N; i++) {
+    const conf = scoresArr[i * 2 + 1];
+    if (conf < _scoreThreshold) continue;
+    candidates.push({
+      xmin: boxesArr[i * 4 + 0],
+      ymin: boxesArr[i * 4 + 1],
+      xmax: boxesArr[i * 4 + 2],
+      ymax: boxesArr[i * 4 + 3],
+      conf,
+    });
+  }
+
+  // NMS — greedy, IoU > 0.3 suppresses.
+  candidates.sort((a, b) => b.conf - a.conf);
+  const kept = [];
+  for (const c of candidates) {
+    let suppress = false;
+    for (const k of kept) {
+      if (iou(c, k) > NMS_IOU_THRESHOLD) { suppress = true; break; }
+    }
+    if (!suppress) kept.push(c);
+  }
+
+  // Up-project normalized [0,1] boxes to source coordinates.
+  return kept.map((b) => {
+    const cx = ((b.xmin + b.xmax) / 2) * sourceWidth;
+    const cy = ((b.ymin + b.ymax) / 2) * sourceHeight;
+    const w  = (b.xmax - b.xmin) * sourceWidth;
+    const h  = (b.ymax - b.ymin) * sourceHeight;
     return {
       x: cx,
       y: cy,
-      w: bb.width * sx,
-      h: bb.height * sy,
-      confidence: cat ? cat.score : 0,
-      keypoints: kp,
+      w, h,
+      confidence: b.conf,
+      keypoints: {}, // Phase 2B: PFLD will populate { right_eye, left_eye, nose, mouth, right_ear, left_ear }
     };
   });
 }
 
 export function closeDetector() {
-  try { if (_detector && typeof _detector.close === 'function') _detector.close(); }
+  try { if (_session && typeof _session.release === 'function') _session.release(); }
   catch {}
-  _detector = null;
+  _session = null;
+  _initPromise = null;
   _disabled = false;
   _disabledReason = null;
 }
 
-// ---- helpers ----
-
-function rgbToRgba(rgb, w, h) {
-  const out = new Uint8Array(w * h * 4);
-  for (let i = 0, j = 0; i < rgb.length; i += 3, j += 4) {
-    out[j]     = rgb[i];
-    out[j + 1] = rgb[i + 1];
-    out[j + 2] = rgb[i + 2];
-    out[j + 3] = 255;
-  }
-  return out;
-}
-
-// MediaPipe BlazeFace short-range emits six keypoints in this order:
-//   0: right_eye, 1: left_eye, 2: nose_tip, 3: mouth_center, 4: right_ear_tragion, 5: left_ear_tragion
-// Each keypoint has normalized x/y in [0,1] across the input frame.
-const KP_ORDER = ['right_eye', 'left_eye', 'nose', 'mouth', 'right_ear', 'left_ear'];
-
-function mapKeypoints(kps, w, h, sx, sy) {
-  const out = {};
-  for (let i = 0; i < KP_ORDER.length; i++) {
-    const k = kps[i];
-    if (!k) continue;
-    out[KP_ORDER[i]] = {
-      x: k.x * w * sx,
-      y: k.y * h * sy,
-    };
-  }
-  return out;
+function iou(a, b) {
+  const xL = Math.max(a.xmin, b.xmin);
+  const yT = Math.max(a.ymin, b.ymin);
+  const xR = Math.min(a.xmax, b.xmax);
+  const yB = Math.min(a.ymax, b.ymax);
+  if (xR <= xL || yB <= yT) return 0;
+  const inter = (xR - xL) * (yB - yT);
+  const aArea = (a.xmax - a.xmin) * (a.ymax - a.ymin);
+  const bArea = (b.xmax - b.xmin) * (b.ymax - b.ymin);
+  return inter / (aArea + bArea - inter);
 }
