@@ -45,6 +45,8 @@ ClipForge is closing.
 | **Brand kit / custom assets**        | **✅**    | ✅       |
 | **Partial re-render (cf-edit)**      | **✅**    | ✅       |
 | **Prompt-driven editing**            | **✅**    | ✅       |
+| **AI B-roll fallback**               | **✅**    | ✅       |
+| **Avatar stingers**                  | **✅**    | ✅       |
 
 Pillar (a) Filler-word & pause removal landed as `/clip-forge:tighten` —
 locale-aware filler dicts (en + id), silence detection, plan invariants,
@@ -274,6 +276,46 @@ Expected provider output is `cuda cuda`. If either provider falls back to
 `cpu`, inspect `detector_provider_fallback_reason` or
 `landmark_provider_fallback_reason` in the generated crop path.
 
+## AI Tier-2 Features — Hard Constraints (v0.4.0 pillar 5)
+
+ClipForge's moat is "AI assists your primary footage; it never *becomes*
+it." The pillar-5 AI B-roll + avatar-stinger skills enforce that with
+three layers:
+
+1. **Segment-level flag.** Every `broll.json` segment carries
+   `is_primary: true|false`. AI skills refuse to operate on
+   `is_primary: true` segments — no API call made, segment left untouched.
+2. **Auto-detect.** `crop_path.json.stats.framesWithFace /
+   framesProcessed > 0.5` → refused with `avatar_overlaps_primary_face`.
+   Conservative on purpose: false-positive refusal beats false-negative
+   AI-over-creator.
+3. **Renderer.** `bin/cf-ffmpeg render` refuses to mux any asset whose
+   own descriptor declares `is_primary: true`. Defense in depth — one
+   bypass at the dispatcher layer still gets caught at the renderer.
+
+Hard duration caps:
+
+| Asset type | Max duration |
+|---|---|
+| AI B-roll cutaway   | 3 s |
+| Avatar stinger      | 5 s |
+
+Avatar generation also requires a **two-gate consent system**:
+
+- **Gate 1** (one-time per machine, bilingual EN+ID prompt). Recorded
+  in `~/.clip-forge/.consent-log` with a sha256 of `hostname + user`.
+  `CF_AVATAR_CONSENT=1` bypasses the interactive prompt (CI / headless).
+- **Gate 2** (per-photo sha256 cache). New portrait triggers a fresh
+  prompt; re-using the same photo skips the prompt and bumps `use_count`.
+
+`/clip-forge:avatar --no-avatar` overrides every gate at run-time —
+zero prompts, zero API calls, zero consent log mutation.
+
+Consent log path: `~/.clip-forge/.consent-log`. To revoke a single
+photo's consent, delete its `photos[<hash>]` entry. To revoke ALL
+consent, delete the file — next `/clip-forge:avatar` invocation
+re-prompts gate 1.
+
 ## 🔑 BYO API Keys (Optional Tier 2 Features)
 
 ClipForge ships local-first. Tier 2 features require your own API
@@ -290,6 +332,22 @@ keys and bill directly from those providers (ClipForge takes nothing):
 Set `CF_AI_BUDGET_USD=N` to cap total per pipeline (default `$10`).
 Local fallback: Piper TTS (offline, no voice clone, generic voice) —
 install via `node bin/install-models.mjs --piper`.
+
+### BYO API Keys Cost Cheatsheet (pillar 5)
+
+| Provider             | Env var                  | Use                         | Per-call cost |
+|----------------------|--------------------------|-----------------------------|---------------|
+| fal.ai Flux Schnell  | `FAL_API_KEY`            | AI B-roll (default)         | ~$0.003/img   |
+| Gemini Nano Banana   | `GEMINI_API_KEY`         | AI B-roll (brand-consistent)| ~$0.04/img    |
+| Replicate            | `REPLICATE_API_TOKEN`    | AI B-roll fallback          | varies        |
+| HeyGen               | `HEYGEN_API_KEY`         | Avatar stinger (best)       | ~$1.00/clip   |
+| D-ID                 | `DID_API_KEY`            | Avatar stinger (mid)        | ~$0.30/clip   |
+| fal.ai LivePortrait  | `FAL_API_KEY`            | Avatar stinger (OSS)        | ~$0.10/clip   |
+
+Override precedence with `CF_VISUAL_PROVIDER=<name>` (image) or
+`CF_AVATAR_PROVIDER=<name>` (avatar). All keys optional — missing
+keys degrade gracefully (B-roll AI silently skipped, avatar silently
+skipped, Pexels broll + dub paths unaffected).
 
 The TTS-related precedence (`/clip-forge:voice-clone` and
 `/clip-forge:dub`) walks down the list `ELEVENLABS_API_KEY →
@@ -339,6 +397,14 @@ alternative (e.g. Whisper instead of Deepgram) or is skipped with a warning.
 | `CF_AI_BUDGET_USD` | Cumulative paid-skill cost cap | default `10.00`; 80 % checkpoint + 100 % hard-stop |
 | `CF_LLM_PROVIDER` | Force LLM provider for cf-edit + translate fallback | `groq\|anthropic`; precedence is groq → anthropic |
 | `CF_TRANSLATE_PROVIDER` | Force translate provider for `/clip-forge:dub` | `groq\|anthropic`; mirrors `CF_LLM_PROVIDER` shape |
+| `FAL_API_KEY` | AI B-roll (Flux Schnell, default) + avatar (LivePortrait) | `/clip-forge:broll-ai`, `/clip-forge:avatar` |
+| `GEMINI_API_KEY` | Nano Banana B-roll (brand-consistent) | `/clip-forge:broll-ai` |
+| `REPLICATE_API_TOKEN` | Replicate B-roll fallback | `/clip-forge:broll-ai` |
+| `HEYGEN_API_KEY` | HeyGen avatar stinger (best quality) | `/clip-forge:avatar` |
+| `DID_API_KEY` | D-ID avatar stinger (mid-tier) | `/clip-forge:avatar` |
+| `CF_VISUAL_PROVIDER` | Force visual provider | `fal\|nanobanana\|replicate` |
+| `CF_AVATAR_PROVIDER` | Force avatar provider | `heygen\|did\|fal_lip` |
+| `CF_AVATAR_CONSENT` | Set to `1` to bypass the one-time avatar consent prompt (CI / headless) | `/clip-forge:avatar` |
 
 ## Quickstart
 

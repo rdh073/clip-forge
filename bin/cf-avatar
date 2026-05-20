@@ -1,0 +1,317 @@
+#!/usr/bin/env node
+// cf-avatar — dispatcher for /clip-forge:avatar (v0.4.0 pillar 5).
+//
+// Generates a ≤5-second avatar stinger from a photo + an audio clip via
+// the resolved avatar provider (HeyGen / D-ID / fal LivePortrait).
+//
+// HARD INVARIANTS (moat anchor — see PLAN-v0.4.0 §3.5):
+//   - duration_ms > 5000 → refused, no API call made
+//   - target segment is_primary: true → refused
+//   - crop_path.json yield > 0.5 → refused (avatar_overlaps_primary_face)
+//   - --no-avatar overrides every gate (skill exits 0 immediately)
+//
+// Consent state machine (§7 Q3): two-gate, bilingual EN+ID. The
+// dispatcher EMITS gate events on stdout; the markdown skill fires the
+// AskUserQuestion. CF_AVATAR_CONSENT=1 bypasses gate 1. CF_CONSENT_MOCK=
+// auto-yes|auto-no decides gates 1+2 in CI without interactive prompts.
+//
+// Mock injection: CF_AVATAR_MOCK=<path> bypasses every network adapter.
+
+import {
+  existsSync, readFileSync, writeFileSync, mkdirSync,
+  renameSync, openSync, fsyncSync, closeSync, statSync,
+} from 'node:fs';
+import { dirname, join, resolve as resolvePath, basename } from 'node:path';
+
+import { generate as avatarGenerate, resolveProvider as resolveAvatarProvider, DURATION_HARD_CAP_MS } from './lib/avatar.mjs';
+import {
+  loadManifest, saveManifest, projectCharge, recordCharge, recordSkip,
+  DEFAULT_BUDGET_USD,
+} from './lib/budget.mjs';
+import { loadCropStats, gateAiOnSegment } from './lib/primary-detect.mjs';
+import {
+  loadLog, saveLogAtomic, checkGate1, recordGate1,
+  checkGate2, recordGate2, bumpUseCount, defaultLogPath,
+  GATE1_PROMPT_EN, GATE1_PROMPT_ID, GATE2_PROMPT_EN, GATE2_PROMPT_ID,
+} from './lib/consent-log.mjs';
+
+function die(msg, code = 1) {
+  process.stderr.write('cf-avatar: ' + msg + '\n');
+  process.exit(code);
+}
+
+function parseArgs(argv) {
+  const out = {
+    slug: null, clipId: null,
+    segmentType: 'hook', segmentId: null,
+    photo: null, audio: null,
+    durationMs: 3000, aspect: '9:16',
+    noAvatar: false, yolo: false, jsonLogs: true,
+    cropPathFile: null, manifestPath: null,
+    consentLogPath: null, brollJsonPath: null,
+    outputPath: null,
+  };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--help' || a === '-h') { printHelp(); process.exit(0); }
+    else if (a === '--slug')           out.slug = argv[++i];
+    else if (a === '--clip-id')        out.clipId = argv[++i];
+    else if (a === '--segment-type')   out.segmentType = argv[++i];
+    else if (a === '--segment-id')     out.segmentId = argv[++i];
+    else if (a === '--photo')          out.photo = argv[++i];
+    else if (a === '--audio')          out.audio = argv[++i];
+    else if (a === '--duration-ms')    out.durationMs = parseInt(argv[++i] || '3000', 10);
+    else if (a === '--aspect')         out.aspect = argv[++i];
+    else if (a === '--no-avatar')      out.noAvatar = true;
+    else if (a === '--yolo')           out.yolo = true;
+    else if (a === '--no-json-logs')   out.jsonLogs = false;
+    else if (a === '--crop-path')      out.cropPathFile = argv[++i];
+    else if (a === '--manifest')       out.manifestPath = argv[++i];
+    else if (a === '--consent-log')    out.consentLogPath = argv[++i];
+    else if (a === '--broll-json')     out.brollJsonPath = argv[++i];
+    else if (a === '--output')         out.outputPath = argv[++i];
+    else die('unknown flag: ' + a);
+  }
+  if (!out.slug)   die('--slug required');
+  if (!out.clipId) die('--clip-id required');
+  if (!out.noAvatar) {
+    if (!out.photo) die('--photo required (or pass --no-avatar)');
+    if (!out.audio) die('--audio required (or pass --no-avatar)');
+  }
+  return out;
+}
+
+function printHelp() {
+  process.stdout.write(`cf-avatar — generate a ≤5s talking-head stinger from a photo + audio
+
+usage:
+  cf-avatar --slug <slug> --clip-id <id> --photo <p> --audio <a>
+            [--segment-type hook|outro] [--duration-ms N] [--aspect 9:16|1:1|16:9]
+            [--no-avatar] [--yolo]
+
+env:
+  HEYGEN_API_KEY            HeyGen (best quality, ~$1.00/clip)
+  DID_API_KEY               D-ID (~$0.30/clip)
+  FAL_API_KEY               fal LivePortrait (~$0.10/clip, OSS)
+  CF_AVATAR_PROVIDER        force heygen|did|fal_lip
+  CF_AVATAR_CONSENT=1       skip the one-time consent gate (CI/headless)
+  CF_AVATAR_MOCK=<path>     inject deterministic mock (test path)
+  CF_CONSENT_MOCK=auto-yes  auto-answer gate prompts (test path)
+  CF_AI_BUDGET_USD          cumulative paid-skill cost cap (default ${DEFAULT_BUDGET_USD})
+`);
+}
+
+function jlog(opts, obj) {
+  if (opts.jsonLogs) process.stdout.write(JSON.stringify(obj) + '\n');
+}
+
+function writeJsonAtomicSync(path, obj) {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = path + '.tmp.' + process.pid + '.' + Date.now();
+  writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n');
+  const fd = openSync(tmp, 'r+');
+  try { fsyncSync(fd); } finally { closeSync(fd); }
+  renameSync(tmp, path);
+  return path;
+}
+
+function consentMockDecision() {
+  const v = (process.env.CF_CONSENT_MOCK || '').toLowerCase();
+  if (v === 'auto-yes') return 'yes';
+  if (v === 'auto-no')  return 'no';
+  return null;
+}
+
+(async () => {
+  const opts = parseArgs(process.argv.slice(2));
+
+  // 0. --no-avatar early exit.
+  if (opts.noAvatar) {
+    jlog(opts, { event: 'done', ok: true, skipped: true,
+                 skip_reason: 'no_avatar_flag' });
+    process.exit(0);
+  }
+
+  // 1. Duration hard cap (defense in depth — avatar.mjs also enforces).
+  if (opts.durationMs > DURATION_HARD_CAP_MS) {
+    jlog(opts, { event: 'refused', refusal_reason: 'avatar_duration_capped',
+                 duration_ms: opts.durationMs, cap_ms: DURATION_HARD_CAP_MS });
+    jlog(opts, { event: 'done', ok: true, generated: 0, refused: 1,
+                 refusal_reason: 'avatar_duration_capped' });
+    process.exit(0);
+  }
+
+  // 2. is_primary refusal via broll.json segment lookup + crop_path auto-detect.
+  let segment = null;
+  if (opts.segmentId) {
+    const brollPath = opts.brollJsonPath || join('./clips', opts.slug, opts.clipId, 'broll.json');
+    const broll = existsSync(brollPath) ? safeJson(brollPath) : null;
+    if (broll && Array.isArray(broll.segments)) {
+      segment = broll.segments.find((s) => String(s.id || s.sentence_idx) === String(opts.segmentId)) || null;
+    }
+  }
+  if (!segment) {
+    segment = {
+      id: opts.segmentId || 'stinger-' + opts.segmentType,
+      type: opts.segmentType,
+      start_ms: 0, end_ms: opts.durationMs,
+      is_primary: false,
+    };
+  }
+  const cropPath = opts.cropPathFile || join('./clips', opts.slug, opts.clipId, 'crop_path.json');
+  const cropStats = loadCropStats(cropPath);
+  const gate = gateAiOnSegment({ segment, cropStats });
+  if (!gate.allowed) {
+    jlog(opts, { event: 'refused', refusal_reason: gate.refusal_reason,
+                 detail: gate.detail, segment_id: segment.id });
+    jlog(opts, { event: 'done', ok: true, generated: 0, refused: 1,
+                 refusal_reason: gate.refusal_reason });
+    process.exit(0);
+  }
+
+  // 3. Consent gate 1 — one-time per machine.
+  const consentLogPath = opts.consentLogPath || defaultLogPath();
+  let consentLog = loadLog(consentLogPath);
+  const g1 = checkGate1(consentLog);
+  if (g1.state === 'needs_prompt') {
+    // Emit the bilingual prompt event. CI passes CF_CONSENT_MOCK=auto-yes.
+    jlog(opts, { event: 'consent_gate_1_prompt',
+                 prompt_en: 'EN: ' + GATE1_PROMPT_EN,
+                 prompt_id: 'ID: ' + GATE1_PROMPT_ID });
+    const decision = consentMockDecision();
+    if (decision === 'no') {
+      jlog(opts, { event: 'consent_gate_1_denied' });
+      jlog(opts, { event: 'done', ok: true, generated: 0, skipped: true,
+                   skip_reason: 'consent_denied_gate_1' });
+      process.exit(0);
+    }
+    if (decision === 'yes') {
+      consentLog = recordGate1(consentLog);
+      saveLogAtomic(consentLog, consentLogPath);
+    } else {
+      // No mock + no env bypass + interactive caller; the skill markdown
+      // must fire AskUserQuestion and re-invoke. We exit 0 with a directive.
+      jlog(opts, { event: 'consent_gate_1_pending' });
+      jlog(opts, { event: 'done', ok: true, generated: 0, skipped: true,
+                   skip_reason: 'consent_gate_1_pending',
+                   directive: 'set_CF_AVATAR_CONSENT_1_or_CF_CONSENT_MOCK' });
+      process.exit(0);
+    }
+  } else if (g1.state === 'env_bypass') {
+    // Record the bypass into the log so subsequent runs without the env
+    // var still skip the prompt — also clarifies audit trail.
+    if (!consentLog.machine_id_hash) {
+      consentLog = recordGate1(consentLog);
+      saveLogAtomic(consentLog, consentLogPath);
+    }
+    jlog(opts, { event: 'consent_gate_1_env_bypass' });
+  }
+
+  // 4. Consent gate 2 — per-photo sha256 cache.
+  const g2 = checkGate2(consentLog, opts.photo);
+  if (g2.state === 'photo_missing') {
+    jlog(opts, { event: 'photo_missing', path: opts.photo });
+    jlog(opts, { event: 'done', ok: true, generated: 0, refused: 1,
+                 refusal_reason: 'photo_missing' });
+    process.exit(0);
+  }
+  if (g2.state === 'needs_prompt') {
+    jlog(opts, { event: 'consent_gate_2_prompt', photo_hash: g2.hash,
+                 prompt_en: 'EN: ' + GATE2_PROMPT_EN,
+                 prompt_id: 'ID: ' + GATE2_PROMPT_ID });
+    const decision = consentMockDecision();
+    if (decision === 'no') {
+      jlog(opts, { event: 'consent_gate_2_denied', photo_hash: g2.hash });
+      jlog(opts, { event: 'done', ok: true, generated: 0, skipped: true,
+                   skip_reason: 'consent_denied_gate_2' });
+      process.exit(0);
+    }
+    if (decision === 'yes') {
+      consentLog = recordGate2(consentLog, g2.hash);
+      saveLogAtomic(consentLog, consentLogPath);
+    } else {
+      jlog(opts, { event: 'consent_gate_2_pending' });
+      jlog(opts, { event: 'done', ok: true, generated: 0, skipped: true,
+                   skip_reason: 'consent_gate_2_pending',
+                   directive: 'set_CF_CONSENT_MOCK_auto-yes_after_user_consents' });
+      process.exit(0);
+    }
+  } else if (g2.state === 'consented') {
+    consentLog = bumpUseCount(consentLog, g2.hash);
+    saveLogAtomic(consentLog, consentLogPath);
+    jlog(opts, { event: 'consent_gate_2_cached', photo_hash: g2.hash,
+                 use_count: consentLog.photos[g2.hash].use_count });
+  }
+
+  // 5. Budget pre-flight.
+  const manifestPath = opts.manifestPath || join('./renders', opts.slug, 'render_manifest.json');
+  let manifest = loadManifest(manifestPath, { slug: opts.slug });
+  const providerInfo = resolveAvatarProvider();
+  const usingMock = !!process.env.CF_AVATAR_MOCK;
+  if (!providerInfo && !usingMock) {
+    jlog(opts, { event: 'done', ok: true, fallback_used: true,
+                 fallback_reason: 'no_avatar_provider',
+                 message: 'set HEYGEN_API_KEY or DID_API_KEY or FAL_API_KEY to enable avatar stingers' });
+    process.exit(0);
+  }
+  const estCost = providerInfo
+    ? (providerInfo.adapter.estimateCostUsd ? providerInfo.adapter.estimateCostUsd() : 1.00)
+    : 0.10;
+  const proj = projectCharge(manifest, estCost);
+  if (!proj.allowed) {
+    recordSkip(manifest, { clip_id: opts.clipId, reason: 'budget_exhausted' });
+    saveManifest(manifestPath, manifest);
+    jlog(opts, { event: 'budget_exhausted', cumulative_usd: manifest.ai_costs.cumulative_usd,
+                 cap_usd: manifest.ai_costs.budget_cap_usd });
+    jlog(opts, { event: 'done', ok: true, generated: 0, budget_exhausted: true });
+    process.exit(0);
+  }
+  if (proj.checkpoint_hit && !opts.yolo) {
+    jlog(opts, { event: 'budget_checkpoint', used_pct: proj.used_pct_after,
+                 cap_usd: manifest.ai_costs.budget_cap_usd });
+  }
+
+  // 6. Generate.
+  const outputPath = opts.outputPath || join('./clips', opts.slug, opts.clipId,
+                                              'avatar-' + opts.segmentType + '.mp4');
+  mkdirSync(dirname(outputPath), { recursive: true });
+  const r = await avatarGenerate({
+    photo_path:  opts.photo,
+    audio_path:  opts.audio,
+    duration_ms: opts.durationMs,
+    aspect:      opts.aspect,
+    video_path:  outputPath,
+  });
+  if (r.fallback_used) {
+    jlog(opts, { event: 'avatar_fallback', fallback_reason: r.fallback_reason });
+    jlog(opts, { event: 'done', ok: true, fallback_used: true,
+                 fallback_reason: r.fallback_reason });
+    process.exit(0);
+  }
+  recordCharge(manifest, {
+    provider: r.provider_used, kind: 'avatar',
+    delta_usd: r.cost_usd || estCost, clip_id: opts.clipId,
+  });
+  saveManifest(manifestPath, manifest);
+
+  jlog(opts, {
+    event: 'done', ok: true, generated: 1,
+    video_path:     r.video_path,
+    provider_used:  r.provider_used,
+    cost_usd:       r.cost_usd || estCost,
+    duration_ms:    opts.durationMs,
+    segment_type:   opts.segmentType,
+    consent_verified: true,
+    cumulative_usd: manifest.ai_costs.cumulative_usd,
+    cap_usd:        manifest.ai_costs.budget_cap_usd,
+  });
+})().catch((e) => {
+  process.stdout.write(JSON.stringify({ event: 'done', ok: false,
+                                         fallback_used: true,
+                                         fallback_reason: 'uncaught: ' + e.message }) + '\n');
+  process.exit(0);
+});
+
+function safeJson(path) {
+  try { return JSON.parse(readFileSync(path, 'utf-8')); } catch { return null; }
+}

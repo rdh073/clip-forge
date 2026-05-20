@@ -242,6 +242,29 @@
         "rejected_reason": { "type": ["string", "null"] },
         "cost_usd":        { "type": "number", "minimum": 0 }
       }
+    },
+    "stingers": {
+      "type": ["object", "null"],
+      "description": "v0.4.0 pillar 5 — AI avatar / generated stingers (hook + outro). Null when no AI stingers participated in the render.",
+      "additionalProperties": false,
+      "properties": {
+        "count":             { "type": "integer", "minimum": 0 },
+        "types":             { "type": "array",   "items": { "type": "string" } },
+        "providers_used":    { "type": "array",   "items": { "type": "string" } },
+        "consent_verified":  { "type": "boolean" },
+        "total_duration_ms": { "type": "number",  "minimum": 0 }
+      }
+    },
+    "broll_ai": {
+      "type": ["object", "null"],
+      "description": "v0.4.0 pillar 5 — AI-generated B-roll cutaways and stylized segments. Null when no AI b-roll participated. AI segments are guaranteed is_primary: false (refused at three layers if true).",
+      "additionalProperties": false,
+      "properties": {
+        "count":             { "type": "integer", "minimum": 0 },
+        "providers_used":    { "type": "array",   "items": { "type": "string" } },
+        "gaps_filled":       { "type": "integer", "minimum": 0 },
+        "stylized_segments": { "type": "integer", "minimum": 0 }
+      }
     }
   }
 }

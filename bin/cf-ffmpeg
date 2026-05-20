@@ -600,6 +600,30 @@ async function buildStingerMp4({ audioPath, outputMp4, canvasW, canvasH }) {
   return r.status === 0;
 }
 
+// Build an MP4 from an AI-avatar stinger source MP4. Transcodes to the
+// render canvas dims with letterbox/pillarbox padding, clamps duration to
+// the requested cap, and re-encodes to ensure concat-demuxer-safe codec
+// parameters. v0.4.0 pillar 5.
+async function buildAiStingerMp4({ srcMp4, outputMp4, canvasW, canvasH, durationMs }) {
+  if (!srcMp4 || !existsSync(srcMp4)) return false;
+  const durS = (Math.max(100, Math.min(5000, durationMs || 3000)) / 1000).toFixed(3);
+  const args = [
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-t', durS, '-i', srcMp4,
+    '-filter_complex',
+      '[0:v]scale=' + canvasW + ':' + canvasH + ':force_original_aspect_ratio=decrease,' +
+      'pad=' + canvasW + ':' + canvasH + ':(ow-iw)/2:(oh-ih)/2,format=yuv420p,setsar=1[v]',
+    '-map', '[v]', '-map', '0:a?',
+    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'fast', '-crf', '22',
+    '-c:a', 'aac', '-b:a', '192k',
+    '-shortest',
+    '-movflags', '+faststart',
+    outputMp4,
+  ];
+  const r = spawnSync('ffmpeg', args);
+  return r.status === 0;
+}
+
 // Build an MP4 from a brand-kit endcard asset (PNG or MP4) sized to the
 // render canvas dims. PNG endcards loop a still frame for `duration_ms`
 // with a silent audio track so the concat-demuxer doesn't desync.
@@ -936,6 +960,21 @@ async function render({ manifest }) {
       die('render: produced zero-byte output (no file left on disk)');
     }
 
+    // ----- v0.4.0 pillar 5: defense-in-depth is_primary guard -----
+    // AI-generated assets (broll-ai cutaways, avatar stingers) carry
+    // is_primary: false. The dispatchers refuse to operate on is_primary
+    // targets; here we refuse to mux any asset whose own descriptor
+    // declares is_primary: true. Belt + suspenders so a bypass at the
+    // dispatcher layer still gets caught at the renderer.
+    const aiAssetGuard = (spec, slot) => {
+      if (spec && typeof spec === 'object' && spec.is_primary === true) {
+        die('render: ai_primary_refusal — ' + slot + ' marked is_primary: true. AI assets MUST carry is_primary: false (moat invariant).');
+      }
+    };
+    aiAssetGuard(m.prepend_video, 'prepend_video');
+    aiAssetGuard(m.append_video,  'append_video');
+    aiAssetGuard(m.broll_ai,      'broll_ai');
+
     // ----- v0.4.0 pillar 2: prepend / append stingers (hook/outro TTS) -----
     // ttsProviderUsed + ttsNondeterministic are declared at the render()
     // function scope (see below at the report-build call site) — the
@@ -943,6 +982,8 @@ async function render({ manifest }) {
     // null/false. v0.4.0 paths populate them inside this block.
     var ttsProviderUsed = null;
     var ttsNondeterministic = false;
+    var aiStingerTelemetry = null;
+    var aiBrollTelemetry = null;
     const stingerWarnings = [];
     if (m.prepend_audio || m.append_audio) {
       const outDir = dirname(m.output);
@@ -983,6 +1024,84 @@ async function render({ manifest }) {
       }
       for (const f of tmpStingers) { try { unlinkSync(f); } catch {} }
       for (const w of stingerWarnings) renderWarnings.push(w);
+    }
+
+    // ----- v0.4.0 pillar 5: avatar-stinger MP4 prepend / append -----
+    // prepend_video / append_video carry { path, duration_ms, source,
+    // provider, cost_usd, is_primary: false }. Renderer transcodes to the
+    // canvas + concats with the main render. ≤5000ms hard cap matches the
+    // avatar dispatcher's cap; oversize is clamped + flagged.
+    const aiStingerParts = [];
+    const aiStingerTmp = [];
+    const aiStingerWarnings = [];
+    const aiStingerProviders = [];
+    const aiStingerTypes = [];
+    let aiStingerTotalMs = 0;
+    const handleAiStinger = async (spec, slot) => {
+      if (!spec || typeof spec !== 'object') return null;
+      if (!spec.path || !existsSync(spec.path)) {
+        aiStingerWarnings.push({ code: slot + '_ai_missing', message: 'asset path absent: ' + (spec.path || '(none)') });
+        return null;
+      }
+      const capMs = Math.max(100, Math.min(5000, spec.duration_ms || 3000));
+      const tmpMp4 = join(tmpdir(), 'cf-' + slot + '-ai-' + process.pid + '-' + Date.now() + '.mp4');
+      const ok = await buildAiStingerMp4({ srcMp4: spec.path, outputMp4: tmpMp4,
+                                              canvasW: canvas.w, canvasH: canvas.h, durationMs: capMs });
+      if (!ok) {
+        aiStingerWarnings.push({ code: slot + '_ai_build_failed', message: 'ffmpeg failed to transcode ' + spec.path });
+        return null;
+      }
+      aiStingerTmp.push(tmpMp4);
+      aiStingerProviders.push(spec.provider || 'unknown');
+      aiStingerTypes.push(spec.type || (slot === 'prepend' ? 'hook' : 'outro'));
+      aiStingerTotalMs += capMs;
+      return tmpMp4;
+    };
+    if (m.prepend_video || m.append_video) {
+      const preMp4 = await handleAiStinger(m.prepend_video, 'prepend');
+      if (preMp4) aiStingerParts.push(preMp4);
+      aiStingerParts.push(m.output);
+      const postMp4 = await handleAiStinger(m.append_video, 'append');
+      if (postMp4) aiStingerParts.push(postMp4);
+      if (aiStingerParts.length > 1) {
+        const combined = m.output + '.with-ai-stingers.mp4';
+        try {
+          await concatMp4s(aiStingerParts, combined);
+          renameSync(combined, m.output);
+        } catch (e) {
+          aiStingerWarnings.push({ code: 'ai_stinger_concat_failed', message: e.message });
+          try { unlinkSync(combined); } catch {}
+        }
+      }
+      for (const f of aiStingerTmp) { try { unlinkSync(f); } catch {} }
+      for (const w of aiStingerWarnings) renderWarnings.push(w);
+      const consentVerified = !!(m.prepend_video && m.prepend_video.provenance &&
+                                  m.prepend_video.provenance.consent_verified) ||
+                              !!(m.append_video && m.append_video.provenance &&
+                                  m.append_video.provenance.consent_verified);
+      aiStingerTelemetry = {
+        count:             (m.prepend_video ? 1 : 0) + (m.append_video ? 1 : 0),
+        types:             aiStingerTypes,
+        providers_used:    Array.from(new Set(aiStingerProviders)),
+        consent_verified:  consentVerified,
+        total_duration_ms: aiStingerTotalMs,
+      };
+    }
+
+    // AI b-roll telemetry — read from broll.json if referenced via m.broll_ai_path.
+    if (m.broll_ai_path && existsSync(m.broll_ai_path)) {
+      try {
+        const brollAi = JSON.parse(readFileSync(m.broll_ai_path, 'utf-8'));
+        if (brollAi && Array.isArray(brollAi.segments)) {
+          const aiSegs = brollAi.segments.filter((s) => s.source === 'ai_generated' || s.source === 'ai_stylized');
+          aiBrollTelemetry = {
+            count:             aiSegs.length,
+            providers_used:    Array.from(new Set(aiSegs.map((s) => s.provider).filter(Boolean))),
+            gaps_filled:       aiSegs.filter((s) => s.source === 'ai_generated').length,
+            stylized_segments: aiSegs.filter((s) => s.source === 'ai_stylized').length,
+          };
+        }
+      } catch { /* best-effort */ }
     }
 
     // ----- v0.4.0 pillar 3: brand-kit endcard append -----
@@ -1126,6 +1245,8 @@ async function render({ manifest }) {
       ttsNondeterministic,
       dubLanguages,
       brandKit: brandKitTelemetry.applied ? brandKitTelemetry : null,
+      stingers: aiStingerTelemetry,
+      brollAi:  aiBrollTelemetry,
     });
     writeRenderReport(report, reportPath);
 

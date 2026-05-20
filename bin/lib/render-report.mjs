@@ -130,6 +130,7 @@ export function buildRenderReport(input) {
     targetAspect, overlays, sidecars,
     aiCosts, ttsProviderUsed, ttsNondeterministic, dubLanguages,
     brandKit, rerender, llm,
+    stingers, brollAi,
   } = input;
 
   // Sign convention: av_drift_ms = video − audio (output is video post-concat;
@@ -167,6 +168,8 @@ export function buildRenderReport(input) {
     brand_kit: brandKit ?? null,
     rerender: rerender ?? null,
     llm: llm ?? null,
+    stingers: stingers ?? null,
+    broll_ai: brollAi ?? null,
   };
 }
 

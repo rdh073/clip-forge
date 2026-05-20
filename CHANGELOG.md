@@ -5,6 +5,100 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — v0.4.0 pillar 5: AI B-roll + avatar stingers (BYO-key, moat-anchored)
+
+- New `/clip-forge:broll-ai` skill + `bin/cf-broll-ai` dispatcher.
+  Gap-fill mode reads `./clips/<slug>/<clip-id>/broll.json` (output of
+  Pexels-first `/clip-forge:broll`), identifies segments with score < 0.5
+  or `source: "ai_gap_pending"`, and generates AI imagery for each via
+  the resolved visual provider. Stylize mode (`--stylize-segment <id>
+  --preset cinematic|comic|anime`) operates on a single segment with a
+  predefined fal.ai/Replicate prompt. Per-cutaway hard cap **3000 ms**;
+  longer windows are truncated + flagged `duration_capped: true`.
+- New `/clip-forge:avatar` skill + `bin/cf-avatar` dispatcher.
+  Generates a ≤5-second talking-head stinger from a portrait photo + a
+  WAV/MP3 via the resolved avatar provider. `--no-avatar` flag is a
+  run-time override that skips every gate (no prompts, no API calls).
+- New pure-logic library `bin/lib/visual.mjs` — dispatcher mirroring the
+  `tts.mjs` shape. Provider precedence per PLAN-v0.4.0 §3.5:
+  `CF_VISUAL_PROVIDER` override → `FAL_API_KEY` (Flux Schnell,
+  ~$0.003/img, default) → `GEMINI_API_KEY` (Nano Banana, ~$0.04/img) →
+  `REPLICATE_API_TOKEN` (fallback) → graceful `no_visual_provider`.
+  Adapter files: `bin/lib/visual/{fal,nanobanana,replicate}.mjs`. Mock
+  injection via `CF_VISUAL_MOCK=<path>` mirrors the existing pattern.
+- New pure-logic library `bin/lib/avatar.mjs` — dispatcher. Provider
+  precedence: `CF_AVATAR_PROVIDER` override → `HEYGEN_API_KEY`
+  (~$1.00/clip) → `DID_API_KEY` (~$0.30/clip) → `FAL_API_KEY` LivePortrait
+  (~$0.10/clip). Adapter files: `bin/lib/avatar/{heygen,did,fal_lip}.mjs`.
+  Dispatcher enforces the 5000 ms duration hard cap before any network
+  call. Mock injection via `CF_AVATAR_MOCK=<path>`.
+- New pure-logic library `bin/lib/consent-log.mjs` — two-gate avatar
+  consent state machine (PLAN-v0.4.0 §7 Q3). Gate 1 is one-time per
+  machine with bilingual EN+ID prompt; `CF_AVATAR_CONSENT=1` bypasses
+  the interactive prompt. Gate 2 is per-photo sha256-cached — new
+  portraits trigger a fresh prompt, re-used portraits skip. State lives
+  in `~/.clip-forge/.consent-log` with atomic write semantics (mirror
+  pillar 4 manifest pattern: write `<path>.tmp.<pid>.<ts>`, fsync,
+  rename). CI mock: `CF_CONSENT_MOCK=auto-yes|auto-no` decides both
+  gates without interactive prompting.
+- New pure-logic library `bin/lib/primary-detect.mjs` — defense-in-depth
+  primary-face gate. Reads `crop_path.json.stats.framesWithFace /
+  framesProcessed`; ratio > 0.5 → refuse with
+  `avatar_overlaps_primary_face`. Used by both `cf-broll-ai` and
+  `cf-avatar`; consciously conservative (false-positive refusal beats
+  false-negative AI-over-creator).
+- `bin/cf-ffmpeg render` extended with **three-layer is_primary
+  enforcement** (the moat invariant): (1) the segment carries
+  `is_primary: bool`; (2) the dispatchers refuse to operate on
+  `is_primary: true` targets; (3) the renderer refuses to mux any asset
+  whose own descriptor declares `is_primary: true` (die with
+  `ai_primary_refusal:<slot>`). edit.json gains optional
+  `prepend_video` / `append_video` (AI avatar MP4 stingers, transcoded
+  to canvas dims + concat-prepended) and `broll_ai_path` (pointer to
+  the AI-augmented broll.json for telemetry).
+- `schemas/render_report.v1.json` extended additively with `stingers:
+  {count, types, providers_used, consent_verified, total_duration_ms}`
+  and `broll_ai: {count, providers_used, gaps_filled,
+  stylized_segments}` top-level fields. Existing required-field list
+  unchanged.
+- Mock fixtures committed: `tests/fixtures/mock-broll-image.png`
+  (256×256 deterministic PNG) and `tests/fixtures/mock-avatar-3s.mp4`
+  (3 s 256×456 placeholder MP4 with silent audio). Realistic-mock
+  contract: dimensions + duration match downstream timing assertions.
+- Mock scripts committed: `tests/mocks/visual-mock.mjs`,
+  `tests/mocks/avatar-mock.mjs`. Both honor the same brief-on-stdin
+  shape as the existing tts-mock + translate-mock + clip-scout-mock,
+  emit JSON result on stdout, and produce real (small) binaries on
+  disk so the renderer's transcode+concat pipeline can validate them.
+- Budget enforcement extends pillar 2 contract: AI B-roll + avatar
+  charges accumulate in `render_manifest.json.ai_costs.cumulative_usd`
+  with provider-specific breakdown keys (`fal_visual`,
+  `nanobanana_visual`, `replicate_visual`, `heygen_avatar`,
+  `did_avatar`, `fal_lip_avatar`). Pillar-2 dub + pillar-4 LLM
+  spend survive byte-for-byte through cf-broll-ai / cf-avatar manifest
+  rewrites — pillar-5 composition test verifies this with
+  pre-seeded `elevenlabs_tts` + `groq_llm` entries.
+- Tests: 45 unit (`bin/lib/visual.test.mjs` × 10 — precedence,
+  override, mock injection, no-keys, paths-required;
+  `bin/lib/avatar.test.mjs` × 12 — precedence, override, mock injection,
+  duration cap, no-keys; `bin/lib/consent-log.test.mjs` × 12 — gate-1
+  state machine, gate-2 sha256 cache, atomic write semantics,
+  bilingual prompt strings, machine_id_hash format;
+  `bin/lib/primary-detect.test.mjs` × 11 — crop-stats load, yield ratio,
+  is_primary refusal, integrated gate). 25 integration
+  (`tests/integration/broll-ai.test.mjs` × 7 — gap-fill, is_primary
+  refusal, stylize mode, no-provider degrade, face-yield refusal,
+  brand-kit hint, budget cap; `tests/integration/avatar.test.mjs` × 11
+  — happy path, duration cap, auto-detect overlap + low yield, gate-1
+  prompt + bypass, gate-2 cache, --no-avatar, no-keys, gate-2 deny,
+  budget exhausted; `tests/integration/budget-cap.test.mjs` × 5 —
+  100 % hard-stop, 80 % checkpoint, --yolo silent skip, pillar 2 + 4
+  field preservation, avatar stacking on dub charges;
+  `tests/integration/pillar-5-composition.test.mjs` × 2 — full pipeline
+  composition gate (16:9 + stinger + broll-ai telemetry + body
+  untouched) and renderer-layer is_primary refusal). Baseline 336/324
+  → 406/394 with 12 skipped + 0 failed; zero regressions.
+
 ### Added — v0.4.0 pillar 4: cf-edit (partial re-render) + prompt-driven re-edit + Anthropic translate completion
 
 - New `/clip-forge:edit` skill + `bin/cf-edit` dispatcher. Two modes:
