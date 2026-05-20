@@ -18,7 +18,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { readFileSync, existsSync, mkdirSync, writeFileSync, unlinkSync, statSync, renameSync } from 'node:fs';
 import { dirname, resolve as resolvePath, join, basename } from 'node:path';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 
 import { chooseRenderMode, buildFilterScript } from './lib/crop-expression-builder.mjs';
 import { buildFfmpegPlan } from './lib/ffmpeg-encoder.mjs';
@@ -33,6 +33,8 @@ import {
 import { buildVtt, buildSrt } from './lib/srt-vtt.mjs';
 import { synthesize as ttsSynthesize } from './lib/tts.mjs';
 import { loadManifest, snapshotForReport } from './lib/budget.mjs';
+import { resolveKitForEdit } from './lib/brand-kit.mjs';
+import { composeBrandKitFilter } from './lib/brand-overlay-builder.mjs';
 
 const GRAPH_SIZE_WARN_BYTES = 8192;
 
@@ -48,6 +50,28 @@ function which(bin) {
 
 if (!which('ffmpeg')) die('ffmpeg not found in PATH');
 if (!which('ffprobe')) die('ffprobe not found in PATH');
+
+// One-shot probe for librsvg support in the local ffmpeg build. SVG brand
+// assets need librsvg compiled in; if absent, the brand-kit overlay path
+// skips SVG inputs with a `librsvg_not_available` warning rather than
+// crashing mid-render. Cached after first call so we pay the cost once.
+let _librsvgAvailable = null;
+function probeLibrsvg() {
+  // Test-time override always wins so the SVG-degrade integration test can
+  // simulate a librsvg-less ffmpeg build without rebuilding ffmpeg.
+  if (process.env.CF_FORCE_NO_LIBRSVG === '1') return false;
+  if (_librsvgAvailable !== null) return _librsvgAvailable;
+  const r = spawnSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-buildconf'], { encoding: 'utf-8' });
+  // Most distro builds expose "--enable-librsvg" in the build config.
+  // Fallback: search demuxer list for "svg".
+  if (r.status === 0 && /--enable-librsvg/.test(r.stdout || '')) {
+    _librsvgAvailable = true;
+  } else {
+    const r2 = spawnSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-demuxers'], { encoding: 'utf-8' });
+    _librsvgAvailable = r2.status === 0 && /svg_pipe|libsvg/i.test(r2.stdout || '');
+  }
+  return _librsvgAvailable;
+}
 
 function runFfmpeg(args, { onProgress } = {}) {
   return new Promise((res, rej) => {
@@ -208,7 +232,7 @@ async function watermark(src, logo, dst) {
 //
 // Exported (via the test helper below) so unit tests can assert argv shape
 // without invoking ffmpeg.
-export function planCropArgs({ crop, source, output, startMs, endMs, captionsPath, quality, audioSource, overlayFilter, deterministic }) {
+export function planCropArgs({ crop, source, output, startMs, endMs, captionsPath, quality, audioSource, overlayFilter, deterministic, brandKitChain, brandKitFinalLabel, brandKitExtraInputs }) {
   const decision = chooseRenderMode(crop);
 
   const args = [];
@@ -216,13 +240,44 @@ export function planCropArgs({ crop, source, output, startMs, endMs, captionsPat
   if (typeof endMs   === 'number') args.push('-to', (endMs   / 1000).toFixed(3));
   args.push('-i', source);
   if (audioSource) args.push('-i', audioSource);
+  // Brand-kit asset inputs (logo, lower-third PNG) come after source +
+  // audio. The brand-kit chain's input indices were assigned with this
+  // ordering in mind (see resolveBrandKitForRender below).
+  if (Array.isArray(brandKitExtraInputs)) {
+    for (const p of brandKitExtraInputs) args.push('-i', p);
+  }
+  // Brand-kit overlays require multi-input filter_complex — force script
+  // mode when the chain is present, otherwise the inline -vf path
+  // can't reference the extra inputs.
+  const useFilterScript = decision.mode === 'filter-script' || !!brandKitChain;
 
   let scriptFile = null;
-  if (decision.mode === 'filter-script') {
+  if (useFilterScript) {
     scriptFile = join(tmpdir(), 'clip-forge-render-' + process.pid + '-' + Date.now() + '.fc');
     const overlayTail = overlayFilter ? ',' + overlayFilter : '';
     const captionTail = captionsPath ? appendCaptionsToScript(captionsPath) : '';
-    writeFileSync(scriptFile, buildFilterScript(crop).replace('[v]\n', overlayTail + captionTail + '[v]\n'));
+    let body = buildFilterScript(crop);
+    if (brandKitChain && brandKitFinalLabel) {
+      // Splice the brand-kit chain between crop+scale and the overlay/
+      // caption tail. The crop script ends in `[v]\n`; rewrite to:
+      //   [0:v]<crop>,<scale>[vcrop];
+      //   <brandkit chain reading [vcrop] → [<final>]>;
+      //   [<final>]<inner tail or null>[v]
+      //
+      // The inner tail is overlay (drawbox) THEN captions (ass). When both
+      // are empty we still need a single filter on the chain — use `null`.
+      const innerTail =
+        (overlayTail ? overlayTail.slice(1) : '') +              // drop leading comma
+        (captionTail
+          ? (overlayTail ? captionTail : captionTail.slice(1))  // keep/drop leading comma
+          : '');
+      const tailFilter = innerTail || 'null';
+      body = body.replace('[v]\n',
+        '[vcrop];' + brandKitChain + ';[' + brandKitFinalLabel + ']' + tailFilter + '[v]\n');
+    } else {
+      body = body.replace('[v]\n', overlayTail + captionTail + '[v]\n');
+    }
+    writeFileSync(scriptFile, body);
     args.push('-filter_complex_script', scriptFile);
     args.push('-map', '[v]', '-map', audioSource ? '1:a?' : '0:a?');
   } else {
@@ -365,7 +420,7 @@ function emitSidecars({ captionsJsonPath, captionsAssPath, outputPath }) {
 //
 // Returns `passes[]` for the renderer to execute sequentially, plus
 // `tmpFiles[]` for cleanup on completion/failure.
-export function planSpliceArgs({ crop, source, output, startMs, endMs, captionsPath, quality, tightenPlan, hasAudio, deterministic, audioSource, overlayFilter }) {
+export function planSpliceArgs({ crop, source, output, startMs, endMs, captionsPath, quality, tightenPlan, hasAudio, deterministic, audioSource, overlayFilter, brandKitChain, brandKitFinalLabel, brandKitExtraInputs }) {
   const cropDecision = chooseRenderMode(crop);
   const graph = buildSpliceGraph({
     plan: tightenPlan,
@@ -373,6 +428,8 @@ export function planSpliceArgs({ crop, source, output, startMs, endMs, captionsP
     captionsPath,
     hasAudio,
     overlayFilter,
+    brandKitChain,
+    brandKitFinalLabel,
   });
 
   const seekArgs = [];
@@ -407,6 +464,12 @@ export function planSpliceArgs({ crop, source, output, startMs, endMs, captionsP
   // ----- Pass 2: video + mux (always runs) -----
   const videoArgs = [...seekArgs, '-i', source];
   if (audioTmpPath) videoArgs.push('-i', audioTmpPath);
+  // Brand-kit asset inputs (logo / lower-third) come after source + audio.
+  // Indices were assigned during composeBrandKitFilter() with the same
+  // ordering rule (see resolveBrandKitForRender below).
+  if (Array.isArray(brandKitExtraInputs)) {
+    for (const p of brandKitExtraInputs) videoArgs.push('-i', p);
+  }
   videoArgs.push('-filter_complex', graph.videoGraph);
   videoArgs.push('-map', graph.mapVideo);
   if (audioTmpPath) {
@@ -533,6 +596,51 @@ async function buildStingerMp4({ audioPath, outputMp4, canvasW, canvasH }) {
     '-movflags', '+faststart',
     outputMp4,
   ];
+  const r = spawnSync('ffmpeg', args);
+  return r.status === 0;
+}
+
+// Build an MP4 from a brand-kit endcard asset (PNG or MP4) sized to the
+// render canvas dims. PNG endcards loop a still frame for `duration_ms`
+// with a silent audio track so the concat-demuxer doesn't desync.
+// MP4 endcards are transcoded to match the main render's canvas + codecs,
+// trimmed/padded to `duration_ms` if specified.
+async function buildEndcardMp4({ spec, outputMp4, canvasW, canvasH }) {
+  if (!spec || !spec.path || !existsSync(spec.path)) return false;
+  const durMs = Math.max(100, Math.min(5000, spec.duration_ms ?? 3000));
+  const durS  = (durMs / 1000).toFixed(3);
+  const isMp4 = /\.mp4$/i.test(spec.path);
+  let args;
+  if (isMp4) {
+    args = [
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-t', durS, '-i', spec.path,
+      '-f', 'lavfi', '-t', durS, '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000',
+      '-filter_complex',
+        '[0:v]scale=' + canvasW + ':' + canvasH + ':force_original_aspect_ratio=decrease,' +
+        'pad=' + canvasW + ':' + canvasH + ':(ow-iw)/2:(oh-ih)/2,format=yuv420p,setsar=1[v]',
+      '-map', '[v]', '-map', '1:a',
+      '-c:v', 'libx264', '-preset', 'fast', '-crf', '22',
+      '-c:a', 'aac', '-b:a', '192k',
+      '-movflags', '+faststart',
+      outputMp4,
+    ];
+  } else {
+    args = [
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-loop', '1', '-t', durS, '-i', spec.path,
+      '-f', 'lavfi', '-t', durS, '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000',
+      '-filter_complex',
+        '[0:v]scale=' + canvasW + ':' + canvasH + ':force_original_aspect_ratio=decrease,' +
+        'pad=' + canvasW + ':' + canvasH + ':(ow-iw)/2:(oh-ih)/2,format=yuv420p,setsar=1[v]',
+      '-map', '[v]', '-map', '1:a',
+      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'fast', '-crf', '22',
+      '-c:a', 'aac', '-b:a', '192k',
+      '-shortest',
+      '-movflags', '+faststart',
+      outputMp4,
+    ];
+  }
   const r = spawnSync('ffmpeg', args);
   return r.status === 0;
 }
@@ -706,6 +814,61 @@ async function render({ manifest }) {
   const useSplice = tightenPlan && (tightenPlan.kept_segments || []).length >= 1
                                  && (tightenPlan.cuts || []).length >= 1;
 
+  // ----- Pillar 3 v0.4.0: brand-kit overlays + endcard append -----
+  //
+  // Three precedence inputs for the brand kit (highest first):
+  //   1. inline `m.brand_kit` — full kit object embedded in edit.json
+  //   2. `m.watermark.brand_kit_ref` — pointer to a brand-kit.json
+  //   3. legacy `m.watermark` (string path) — maps to logo-only kit
+  // Falls back to ./uploads/<slug>/brand-kit.json then
+  // ~/.clip-forge/brand-kit.json when none of the above is set.
+  const brandKitTelemetry = { applied: false, source: null, assets_burned: [], warnings: [] };
+  let brandKitChain = null;
+  let brandKitFinalLabel = null;
+  let brandKitExtraInputs = [];
+  let brandKitEndcardSpec = null;
+  {
+    const projectKitPath = m.slug ? join('./uploads', m.slug, 'brand-kit.json') : null;
+    const globalKitPath  = join(process.env.HOME || homedir(), '.clip-forge', 'brand-kit.json');
+    const resolved = resolveKitForEdit(m, { globalPath: globalKitPath, projectPath: projectKitPath });
+    for (const w of resolved.warnings) brandKitTelemetry.warnings.push(w);
+    if (resolved.applied) {
+      const inputIndexOffset = (audioSource ? 2 : 1);  // 0=source, 1=audio (if set)
+      const composed = composeBrandKitFilter({
+        brand:           resolved.kit,
+        canvasW:         canvas.w,
+        canvasH:         canvas.h,
+        inputIndexOffset,
+        startLabel:      useSplice ? 'vconcat' : 'vcrop',
+        librsvgAvailable: probeLibrsvg(),
+      });
+      for (const w of composed.warnings) brandKitTelemetry.warnings.push(w);
+      if (composed.chain) {
+        brandKitChain       = composed.chain;
+        brandKitFinalLabel  = composed.finalLabel;
+        brandKitExtraInputs = composed.extraInputs;
+        brandKitTelemetry.applied       = true;
+        brandKitTelemetry.source        = resolved.source;
+        brandKitTelemetry.assets_burned = composed.assetsBurned.slice();
+      }
+      if (resolved.kit.assets && resolved.kit.assets.endcard) {
+        brandKitEndcardSpec = resolved.kit.assets.endcard;
+        brandKitTelemetry.applied = true;
+        if (!brandKitTelemetry.source) brandKitTelemetry.source = resolved.source;
+        if (!brandKitTelemetry.assets_burned.includes('endcard')) {
+          brandKitTelemetry.assets_burned.push('endcard');
+        }
+      }
+    }
+    // Mirror brand-kit warnings into the top-level render_warnings, but
+    // strip the `asset` sub-field — the top-level schema is `{code, message}`
+    // only (additionalProperties:false). The `asset` field stays available
+    // inside `brand_kit.warnings` where the schema allows it.
+    for (const w of brandKitTelemetry.warnings) {
+      renderWarnings.push({ code: w.code, message: w.message || '' });
+    }
+  }
+
   let plan;
   if (useSplice) {
     plan = planSpliceArgs({
@@ -717,6 +880,7 @@ async function render({ manifest }) {
       deterministic,
       audioSource: audioInput,
       overlayFilter,
+      brandKitChain, brandKitFinalLabel, brandKitExtraInputs,
     });
     // ADD-3: filter graph size guard (uses the larger of the two graphs).
     if (plan.filterComplex.length > GRAPH_SIZE_WARN_BYTES) {
@@ -739,6 +903,7 @@ async function render({ manifest }) {
       audioSource,
       overlayFilter,
       deterministic,
+      brandKitChain, brandKitFinalLabel, brandKitExtraInputs,
     });
     plan = { passes: [{ label: 'crop', ...cropPlan }], tmpFiles: cropPlan.scriptFile ? [cropPlan.scriptFile] : [], mode: cropPlan.mode, encoder: cropPlan.encoder };
     process.stdout.write(JSON.stringify({
@@ -818,6 +983,29 @@ async function render({ manifest }) {
       }
       for (const f of tmpStingers) { try { unlinkSync(f); } catch {} }
       for (const w of stingerWarnings) renderWarnings.push(w);
+    }
+
+    // ----- v0.4.0 pillar 3: brand-kit endcard append -----
+    if (brandKitEndcardSpec && brandKitEndcardSpec.path && existsSync(brandKitEndcardSpec.path)) {
+      const endcardMp4 = join(tmpdir(), 'cf-endcard-' + process.pid + '-' + Date.now() + '.mp4');
+      const ok = await buildEndcardMp4({
+        spec: brandKitEndcardSpec, outputMp4: endcardMp4,
+        canvasW: canvas.w, canvasH: canvas.h,
+      });
+      if (ok) {
+        const combined = m.output + '.with-endcard.mp4';
+        try {
+          await concatMp4s([m.output, endcardMp4], combined);
+          renameSync(combined, m.output);
+        } catch (e) {
+          renderWarnings.push({ code: 'endcard_concat_failed', message: e.message });
+          try { unlinkSync(combined); } catch {}
+        }
+        try { unlinkSync(endcardMp4); } catch {}
+      } else {
+        renderWarnings.push({ code: 'endcard_build_failed',
+                              message: 'ffmpeg failed to materialise endcard at ' + brandKitEndcardSpec.path });
+      }
     }
 
     // ----- emit VTT + SRT sidecars (pillar (i) — best-effort) -----
@@ -937,6 +1125,7 @@ async function render({ manifest }) {
       ttsProviderUsed,
       ttsNondeterministic,
       dubLanguages,
+      brandKit: brandKitTelemetry.applied ? brandKitTelemetry : null,
     });
     writeRenderReport(report, reportPath);
 

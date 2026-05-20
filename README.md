@@ -42,6 +42,7 @@ ClipForge is closing.
 | **Hook overlay + progress bar**      | **✅**    | ✅       |
 | **Voice cloning (hook / outro / dub)** | **✅**  | ✅       |
 | **Multi-language dub**               | **✅**    | partial  |
+| **Brand kit / custom assets**        | **✅**    | ✅       |
 
 Pillar (a) Filler-word & pause removal landed as `/clip-forge:tighten` —
 locale-aware filler dicts (en + id), silence detection, plan invariants,
@@ -86,6 +87,54 @@ render skill can mux a hook/outro stinger via the same TTS abstraction
 without re-writing `audio_source`. See
 [skills/voice-clone/SKILL.md](skills/voice-clone/SKILL.md) and
 [skills/dub/SKILL.md](skills/dub/SKILL.md).
+
+## Brand Kit (v0.4.0 pillar 3)
+
+Register a logo, endcard, and lower-third overlay once, burn them into
+every clip. Two scopes — global at `~/.clip-forge/brand-kit.json` and
+per-project at `./uploads/<slug>/brand-kit.json` (project wins entirely
+over global, mirrors `voices.json`).
+
+One-screen tutorial:
+
+```bash
+# 1. Register a logo (PNG ≤ 2 MB) — defaults to bottom-right, 70% opacity, 96 px wide.
+${CLAUDE_PLUGIN_ROOT}/bin/cf-brand-kit add \
+  --asset logo --path /abs/path/logo.png \
+  --position bottom-right --opacity 0.7 --scale-px 96 \
+  --global
+
+# 2. Add an endcard (PNG or MP4 ≤ 3 s, ≤ 3 MB for MP4 / ≤ 2 MB for PNG).
+${CLAUDE_PLUGIN_ROOT}/bin/cf-brand-kit add \
+  --asset endcard --path /abs/path/endcard.mp4 --duration-ms 3000 --global
+
+# 3. Add a lower-third banner (PNG with alpha, time-gated).
+${CLAUDE_PLUGIN_ROOT}/bin/cf-brand-kit add \
+  --asset lower_third --path /abs/path/lt.png \
+  --position bottom-left --show-from-ms 1500 --show-until-ms 4000 --global
+
+# 4. Inspect the active kit.
+${CLAUDE_PLUGIN_ROOT}/bin/cf-brand-kit list --global
+
+# 5. Render — brand kit applies automatically. No edit.json changes needed.
+${CLAUDE_PLUGIN_ROOT}/bin/cf-ffmpeg render --manifest ./clips/<slug>/<clip-id>/edit.json
+```
+
+`edit.json` accepts three brand-kit shapes (precedence order):
+
+```jsonc
+{ "brand_kit": { "version": 1, ... } }                 // 1. inline (highest)
+{ "watermark": { "brand_kit_ref": "/abs/path.json" } } // 2. reference
+{ "watermark": "/abs/path/logo.png" }                  // 3. legacy string (still works)
+```
+
+When none of the above is set, the per-project / global brand-kit.json
+loads automatically. Missing assets degrade gracefully — `brand_asset_missing:<key>`
+warning surfaces in `render_report.json.brand_kit.warnings`, and the
+render proceeds with whatever IS available. SVG assets fall back when
+ffmpeg lacks librsvg (`librsvg_not_available` warning).
+
+See [skills/brand-kit/SKILL.md](skills/brand-kit/SKILL.md).
 
 Pillar (i) Hook overlay + progress bar + emoji caption burn + aspect
 profiles + VTT/SRT sidecars closes the *visual* parity gap with OpusClip.
@@ -266,6 +315,7 @@ Pass `--yolo` to skip every approval gate and ship 10 clips unattended:
 | `/clip-forge:render`       | Final 9:16 1080×1920 MP4 per clip (ffmpeg presets) |
 | `/clip-forge:voice-clone`  | Upload a 30 s sample to ElevenLabs/Cartesia/Groq/Piper; save `voice_id` to `voices.json` |
 | `/clip-forge:dub`          | Translate + TTS-dub the transcript into N languages; emit per-lang `edit.dub-<lang>.json` |
+| `/clip-forge:brand-kit`    | Register logo / endcard / lower-third in `brand-kit.json`; renderer burns them into every clip |
 | `/clip-forge:publish`      | Post to TikTok, Reels, Shorts, X |
 | `/clip-forge:schedule`     | Queue posts for later; monitor drains the queue |
 | `/clip-forge:analytics`    | Per-clip views, watch-time, retention report |

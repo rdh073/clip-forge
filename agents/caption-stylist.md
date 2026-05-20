@@ -100,6 +100,21 @@ text.
 If the caller's brief omits a `hook`, omit `hook_span` from your output —
 do not invent a hook from the body.
 
+## Brand-kit token substitution (v0.4.0 pillar 3)
+
+Caption templates (`templates/captions/<style>.json`) may include the
+literal token `$brand.logo` in any string field that accepts a filename
+(e.g. a watermark anchor in a hook overlay). The renderer substitutes
+the token with the absolute path of `kit.assets.logo.path` from the
+active brand-kit (per-project wins over global; see
+`bin/lib/brand-kit.mjs` for the resolver).
+
+**Color tokens are a reserved hook, not yet wired.** Tokens of the form
+`$brand.colors.primary` and `$brand.colors.accent` are documented for
+v0.5.0; today they remain as-is in the template output. Do not assume
+they expand. See `docs/PLAN-v0.4.0.md` §10 decision log for the
+deferral rationale.
+
 ## Mood adjunct (when called by /clip-forge:music)
 
 When the caller asks for mood instead of style, return:

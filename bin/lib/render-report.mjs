@@ -129,6 +129,7 @@ export function buildRenderReport(input) {
     tighten, junctions, warnings,
     targetAspect, overlays, sidecars,
     aiCosts, ttsProviderUsed, ttsNondeterministic, dubLanguages,
+    brandKit,
   } = input;
 
   // Sign convention: av_drift_ms = video − audio (output is video post-concat;
@@ -163,6 +164,7 @@ export function buildRenderReport(input) {
     tts_provider_used: ttsProviderUsed ?? null,
     tts_nondeterministic: !!ttsNondeterministic,
     dub_languages: Array.isArray(dubLanguages) ? dubLanguages.slice() : [],
+    brand_kit: brandKit ?? null,
   };
 }
 

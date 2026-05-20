@@ -164,9 +164,11 @@ function complementOf(cuts, dur) {
  * @param {string|null} args.captionsPath path to .ass captions, or null
  * @param {boolean} args.hasAudio     whether the source has an audio stream
  * @param {string|null} [args.overlayFilter] optional filter chain inserted between concat and captions burn (e.g. progress-bar drawbox). Pillar (i) v0.3.0.
+ * @param {string|null} [args.brandKitChain] optional semicolon-joined filter chain for brand-kit overlays (logo / lower-third). Reads from `[vconcat]`, must terminate in `[<brandKitFinalLabel>]`. Pillar 3 v0.4.0.
+ * @param {string|null} [args.brandKitFinalLabel] label of the last brand-kit chain stream. Required when brandKitChain is set.
  * @returns {{filterComplex:string, videoGraph:string, audioGraph:string|null, mapVideo:string, mapAudio:string|null, padDurS:number, junctionCount:number, keptCount:number}}
  */
-export function buildSpliceGraph({ plan, cropFilterArg, captionsPath, hasAudio, overlayFilter }) {
+export function buildSpliceGraph({ plan, cropFilterArg, captionsPath, hasAudio, overlayFilter, brandKitChain, brandKitFinalLabel }) {
   const kept = plan.kept_segments || [];
   const N = kept.length;
   if (N === 0) {
@@ -189,11 +191,20 @@ export function buildSpliceGraph({ plan, cropFilterArg, captionsPath, hasAudio, 
     }
     videoParts.push(`${rangeLabels('v', N)}concat=n=${N}:v=1:a=0[vconcat]`);
   }
+  // Brand-kit overlay chain (logo / lower-third) inserts BEFORE the
+  // progress bar + caption burn. Pillar 3 v0.4.0. The brand-kit caller
+  // must build the chain with startLabel='vconcat' so its first stage
+  // reads from the splice's concat output. We append the chain verbatim;
+  // the chain itself terminates in [<brandKitFinalLabel>].
+  let preCaptionLabel = '[vconcat]';
+  if (brandKitChain && brandKitFinalLabel) {
+    videoParts.push(brandKitChain);
+    preCaptionLabel = '[' + brandKitFinalLabel + ']';
+  }
   // Optional progress-bar / drawbox layer goes BEFORE the captions burn so
   // ASS dialogue renders on top of the bar. Pillar (i) v0.3.0.
-  let preCaptionLabel = '[vconcat]';
   if (overlayFilter) {
-    videoParts.push(`[vconcat]${overlayFilter}[vpre]`);
+    videoParts.push(`${preCaptionLabel}${overlayFilter}[vpre]`);
     preCaptionLabel = '[vpre]';
   }
   if (captionsPath) {

@@ -1,0 +1,186 @@
+#!/usr/bin/env node
+// cf-brand-kit — dispatcher for /clip-forge:brand-kit.
+//
+// Subcommands:
+//   add         --asset logo|endcard|lower_third --path <abs> [--position p] [--opacity 0-1]
+//                                                            [--scale-px N] [--duration-ms N]
+//                                                            [--show-from-ms N] [--show-until-ms N]
+//                                                            [--slug <slug>] [--global]
+//   list        [--slug <slug>] [--global]
+//   set-default <kit-name> [--global]   (placeholder — single kit per file, just rewrites `name`)
+//   remove      --asset logo|endcard|lower_third [--slug <slug>] [--global]
+//
+// Storage: writes to ./uploads/<slug>/brand-kit.json by default (per-project).
+//          --global flips to ~/.clip-forge/brand-kit.json.
+//
+// All paths are normalised to absolute. File-size limits are enforced
+// at write time too (so the user gets immediate feedback rather than at
+// render time).
+
+import { existsSync, statSync, mkdirSync } from 'node:fs';
+import { join, resolve as resolvePath, dirname } from 'node:path';
+import { homedir } from 'node:os';
+
+import {
+  loadKitFile, saveKitFile, upsertAsset, removeAsset, LIMITS, SCHEMA_VERSION,
+} from './lib/brand-kit.mjs';
+
+function die(msg, code = 1) {
+  process.stderr.write('cf-brand-kit: ' + msg + '\n');
+  process.exit(code);
+}
+
+function parseArgs(argv) {
+  const out = {
+    sub:           argv[0] || null,
+    asset:         null,
+    path:          null,
+    position:      null,
+    opacity:       null,
+    scalePx:       null,
+    durationMs:    null,
+    showFromMs:    null,
+    showUntilMs:   null,
+    slug:          null,
+    global:        false,
+    name:          null,
+    jsonLogs:      true,
+  };
+  for (let i = 1; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--help' || a === '-h')           { printHelp(); process.exit(0); }
+    else if (a === '--asset')                   out.asset       = argv[++i];
+    else if (a === '--path')                    out.path        = argv[++i];
+    else if (a === '--position')                out.position    = argv[++i];
+    else if (a === '--opacity')                 out.opacity     = parseFloat(argv[++i]);
+    else if (a === '--scale-px')                out.scalePx     = parseInt(argv[++i], 10);
+    else if (a === '--duration-ms')             out.durationMs  = parseInt(argv[++i], 10);
+    else if (a === '--show-from-ms')            out.showFromMs  = parseInt(argv[++i], 10);
+    else if (a === '--show-until-ms')           out.showUntilMs = parseInt(argv[++i], 10);
+    else if (a === '--slug')                    out.slug        = argv[++i];
+    else if (a === '--name')                    out.name        = argv[++i];
+    else if (a === '--global')                  out.global      = true;
+    else if (a === '--no-json-logs')            out.jsonLogs    = false;
+    else if (out.sub === 'set-default' && !out.name) out.name = a;
+    else die('unknown flag: ' + a);
+  }
+  return out;
+}
+
+function printHelp() {
+  process.stdout.write(`cf-brand-kit — manage ~/.clip-forge/brand-kit.json (global) or ./uploads/<slug>/brand-kit.json (per-project)
+
+usage:
+  cf-brand-kit add --asset logo|endcard|lower_third --path <abs> [options]
+  cf-brand-kit list [--slug <slug>] [--global]
+  cf-brand-kit set-default <kit-name> [--slug <slug>] [--global]
+  cf-brand-kit remove --asset logo|endcard|lower_third [--slug <slug>] [--global]
+
+options (add):
+  --position bottom-right|bottom-left|top-right|top-left|center  (logo/lower_third)
+  --opacity  0.0–1.0   default 0.7 (logo) / 0.9 (lower_third)
+  --scale-px N         logo only, default 96, range 8..1024
+  --duration-ms N      endcard only, default 3000 (mp4) / 2000 (png), range 100..5000
+  --show-from-ms N     lower_third only, default 1500
+  --show-until-ms N    lower_third only, default 4000
+  --slug <slug>        per-project file at ./uploads/<slug>/brand-kit.json
+  --global             write to ~/.clip-forge/brand-kit.json (overrides --slug)
+
+limits enforced at WRITE time:
+  logo / lower_third PNG / SVG  ≤ 2 MB
+  endcard PNG                   ≤ 2 MB
+  endcard MP4                   ≤ 3 MB
+`);
+}
+
+function jlog(opts, obj) {
+  if (opts.jsonLogs) process.stdout.write(JSON.stringify(obj) + '\n');
+}
+
+function targetPath(opts) {
+  if (opts.global) return join(homedir(), '.clip-forge', 'brand-kit.json');
+  if (opts.slug)   return join('./uploads', opts.slug, 'brand-kit.json');
+  return join(homedir(), '.clip-forge', 'brand-kit.json');  // default → global
+}
+
+function loadOrEmpty(path) {
+  const r = loadKitFile(path, { enforce: false });
+  return r.kit;
+}
+
+function buildAssetEntry(opts) {
+  if (!opts.path) die('--path is required for add');
+  const abs = resolvePath(opts.path);
+  if (!existsSync(abs)) die('asset file not found: ' + abs);
+  const size = statSync(abs).size;
+  if (opts.asset === 'logo') {
+    if (size > LIMITS.logo_bytes) die('logo over 2 MB (' + size + ' bytes); refusing to write');
+    return {
+      path:     abs,
+      position: opts.position || 'bottom-right',
+      opacity:  opts.opacity ?? 0.7,
+      scale_px: opts.scalePx ?? 96,
+    };
+  }
+  if (opts.asset === 'endcard') {
+    const isMp4 = /\.mp4$/i.test(abs);
+    const cap = isMp4 ? LIMITS.endcard_mp4_bytes : LIMITS.endcard_png_bytes;
+    if (size > cap) die('endcard over ' + cap + ' bytes (' + size + ' bytes); refusing to write');
+    return { path: abs, duration_ms: opts.durationMs ?? (isMp4 ? 3000 : 2000) };
+  }
+  if (opts.asset === 'lower_third') {
+    if (size > LIMITS.lower_third_bytes) die('lower_third over 2 MB; refusing to write');
+    return {
+      path:          abs,
+      position:      opts.position || 'bottom-left',
+      opacity:       opts.opacity ?? 0.9,
+      show_from_ms:  opts.showFromMs ?? 1500,
+      show_until_ms: opts.showUntilMs ?? 4000,
+    };
+  }
+  die('--asset must be one of: logo, endcard, lower_third');
+}
+
+(async () => {
+  const opts = parseArgs(process.argv.slice(2));
+  if (!opts.sub) die('subcommand required — try: add | list | set-default | remove');
+
+  const path = targetPath(opts);
+
+  if (opts.sub === 'add') {
+    if (!opts.asset) die('--asset required');
+    const kit = loadOrEmpty(path);
+    const entry = buildAssetEntry(opts);
+    const updated = upsertAsset(kit, opts.asset, entry);
+    saveKitFile(path, updated);
+    jlog(opts, { event: 'done', ok: true, action: 'add', asset: opts.asset, path,
+                 entry, scope: opts.global ? 'global' : (opts.slug ? 'project' : 'global') });
+    return;
+  }
+  if (opts.sub === 'list') {
+    const kit = loadOrEmpty(path);
+    jlog(opts, { event: 'done', ok: true, action: 'list', path, kit });
+    return;
+  }
+  if (opts.sub === 'set-default') {
+    if (!opts.name) die('set-default requires a kit name');
+    const kit = loadOrEmpty(path);
+    kit.name = opts.name;
+    saveKitFile(path, kit);
+    jlog(opts, { event: 'done', ok: true, action: 'set-default', path, name: opts.name });
+    return;
+  }
+  if (opts.sub === 'remove') {
+    if (!opts.asset) die('--asset required for remove');
+    const kit = loadOrEmpty(path);
+    const updated = removeAsset(kit, opts.asset);
+    saveKitFile(path, updated);
+    jlog(opts, { event: 'done', ok: true, action: 'remove', asset: opts.asset, path });
+    return;
+  }
+  die('unknown subcommand: ' + opts.sub);
+})().catch((e) => {
+  process.stdout.write(JSON.stringify({ event: 'done', ok: false,
+                                         fallback_used: true, fallback_reason: 'uncaught: ' + e.message }) + '\n');
+  process.exit(0);
+});

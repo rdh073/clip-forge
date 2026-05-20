@@ -1,0 +1,54 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "brand-kit.v1",
+  "title": "ClipForge brand-kit v1",
+  "description": "User-owned bundle of brand assets (logo / endcard / lower-third) consumed by the renderer. Stored at ~/.clip-forge/brand-kit.json (global) or ./uploads/<slug>/brand-kit.json (per-project; wins entirely over global, mirrors voices.json precedence). Size limits enforced at LOAD time, not render time: any asset over 2 MB (PNG/SVG/PNG-lower-third) or 3 MB (MP4 endcard) is skipped with brand_kit_asset_oversize warning before the filter graph is built.",
+  "type": "object",
+  "required": ["version", "name", "assets"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "const": 1 },
+    "name": {
+      "type": "string",
+      "description": "Identifier for this kit. 'default' for the active global kit, '<slug>' for per-project kits."
+    },
+    "assets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "logo": {
+          "type": ["object", "null"],
+          "required": ["path"],
+          "additionalProperties": false,
+          "properties": {
+            "path":     { "type": "string", "description": "Absolute path to a PNG or SVG (≤ 2 MB)." },
+            "position": { "enum": ["bottom-right", "bottom-left", "top-right", "top-left", "center"] },
+            "opacity":  { "type": "number", "minimum": 0, "maximum": 1 },
+            "scale_px": { "type": "integer", "minimum": 8, "maximum": 1024 }
+          }
+        },
+        "endcard": {
+          "type": ["object", "null"],
+          "required": ["path"],
+          "additionalProperties": false,
+          "properties": {
+            "path":        { "type": "string", "description": "Absolute path to a PNG (≤ 2 MB) or MP4 (≤ 3 MB, ≤ 3 s)." },
+            "duration_ms": { "type": "integer", "minimum": 100, "maximum": 5000 }
+          }
+        },
+        "lower_third": {
+          "type": ["object", "null"],
+          "required": ["path"],
+          "additionalProperties": false,
+          "properties": {
+            "path":           { "type": "string", "description": "Absolute path to a PNG with alpha (≤ 2 MB)." },
+            "position":       { "enum": ["bottom-right", "bottom-left", "top-right", "top-left", "center"] },
+            "opacity":        { "type": "number", "minimum": 0, "maximum": 1 },
+            "show_from_ms":   { "type": "integer", "minimum": 0 },
+            "show_until_ms":  { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    }
+  }
+}

@@ -5,6 +5,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — v0.4.0 pillar 3: brand kit / custom assets
+
+- New `~/.clip-forge/brand-kit.json` (global) / `./uploads/<slug>/brand-kit.json`
+  (per-project, wins entirely over global — mirrors `voices.json` from
+  pillar 2). Schema `schemas/brand-kit.v1.json` v1:
+  `{version, name, assets: {logo, endcard, lower_third}}` — each asset
+  carries its own position / opacity / scale_px / duration_ms /
+  show_from_ms / show_until_ms knobs.
+- `/clip-forge:brand-kit` (new) — wizard slash command +
+  `bin/cf-brand-kit` dispatcher with four subcommands: `add` (interactive
+  with `AskUserQuestion`), `list`, `set-default`, `remove`. Writes to
+  the global file by default; `--slug <slug>` redirects to the per-project
+  file. File-size limits enforced at WRITE time (logo / lower-third PNG ≤
+  2 MB, endcard PNG ≤ 2 MB, endcard MP4 ≤ 3 MB) so oversized assets are
+  caught immediately.
+- `bin/lib/brand-kit.mjs` (new, pure-logic) — `loadKit({globalPath,
+  projectPath})` precedence loader (per-project wins, no merge),
+  `resolveKitForEdit(editJson, …)` carrying the three-way precedence
+  (inline `brand_kit` → `watermark.brand_kit_ref` → legacy `watermark`
+  string → project/global file), `enforceAssetLimits(kit, warnings)`
+  which strips oversize/missing assets BEFORE the filter graph is
+  built. 12 unit tests in `bin/lib/brand-kit.test.mjs`.
+- `bin/lib/brand-overlay-builder.mjs` (new, pure-logic) — builds the
+  ffmpeg `-filter_complex` chains: `buildLogoOverlay()` (positioned +
+  scaled + colorchannelmixer-tinted), `buildLowerThirdOverlay()`
+  (time-gated via `enable='between(t, show_from, show_until)'`),
+  `composeBrandKitFilter()` (chains the two with shared input
+  indexing). All builders idempotent — no `Date.now()`, no `Math.random()`,
+  no `process.env` reads. 14 unit tests in
+  `bin/lib/brand-overlay-builder.test.mjs`.
+- `edit.json` schema additions (additive — older readers ignore):
+  - `brand_kit: { … }` — inline kit object (highest precedence)
+  - `watermark.brand_kit_ref: "<path>"` — pointer to a brand-kit.json
+  - Legacy `watermark: "<path>"` string still maps to a logo-only kit
+    with default position bottom-right + opacity 0.7 (B5 backward-compat
+    regression-guarded by an integration test).
+- `bin/cf-ffmpeg render` extended to:
+  - Resolve the brand kit per the precedence chain above (lazy probe of
+    `~/.clip-forge/brand-kit.json` and `./uploads/<slug>/brand-kit.json`
+    when edit.json carries no inline brand info).
+  - Compose the brand-kit filter chain into both the splice
+    (`buildSpliceGraph`) and non-splice (`planCropArgs`) paths. Brand-kit
+    chain inserts BEFORE the progress-bar drawbox + caption burn so
+    overlays sit above the logo but below the hook text layer.
+  - Append endcard via the concat demuxer when `assets.endcard` is set
+    — PNG endcards are still-rendered at `duration_ms`, MP4 endcards
+    play through their own duration (capped at 5 s). Output container
+    is re-muxed to keep V/A in sync.
+  - Probe `ffmpeg -buildconf` once for `--enable-librsvg`; SVG assets
+    in a librsvg-less build are skipped with `librsvg_not_available`
+    warning while PNG assets in the same kit render normally.
+  - `CF_FORCE_NO_LIBRSVG=1` env var simulates a librsvg-less build for
+    integration tests.
+- `bin/lib/tighten-splice.mjs.buildSpliceGraph` accepts new
+  `brandKitChain` + `brandKitFinalLabel` args. The chain reads from
+  `[vconcat]` (splice's concat output) and emits a labelled stream that
+  feeds the existing overlay/captions tail. ADDITIVE: undefined → identical
+  graph to pillar 2; every prior tighten-splice test still passes.
+- `bin/lib/render-report.mjs.buildRenderReport` writes a new top-level
+  `brand_kit` field — `{applied, source, assets_burned: ["logo",
+  "endcard", "lower_third"], warnings: [{code, asset?, message}]}` —
+  null when no brand kit applies. Schema `render_report.v1.json`
+  extended additively (existing required fields unchanged).
+- `agents/caption-stylist.md` documents `$brand.logo` token substitution
+  as wired in v0.4.0 pillar 3, with `$brand.colors.primary/.accent` as
+  a reserved-but-not-yet-implemented hook (deferred to v0.5.0 per
+  `docs/PLAN-v0.4.0.md` §10 decision log).
+- `schemas/brand-kit.v1.json` (new) — JSON Schema for the brand-kit file
+  format. Documentation only; runtime validation lives in
+  `bin/lib/brand-kit.mjs` (zero new deps).
+- Tests: 26 new unit (`bin/lib/brand-kit.test.mjs` × 12 +
+  `bin/lib/brand-overlay-builder.test.mjs` × 14) + 9 new integration
+  (`tests/integration/brand-kit.test.mjs` — logo luminance, endcard
+  duration, lower-third time-gating, B1 missing-no-warning, B2
+  malformed-warning, B3 missing-asset-warning, B5 legacy-string
+  backward-compat regression guard, SVG graceful-degrade,
+  composition gate: brand-kit + 16:9 + dub.audio_source + tighten
+  cuts + hook_overlay all in ONE render).
+- Source: `docs/PLAN-v0.4.0.md` §3.3 + §10 decision log.
+
 ### Added — v0.4.0 pillar 2: multi-language dub + voice clone
 
 - New TTS abstraction layer at `bin/lib/tts.mjs` with four backend

@@ -192,6 +192,33 @@
       "type": "array",
       "description": "v0.4.0 pillar 2 — target languages produced for this clip via /clip-forge:dub. Empty array when dub did not run.",
       "items": { "type": "string" }
+    },
+    "brand_kit": {
+      "type": ["object", "null"],
+      "description": "v0.4.0 pillar 3 — brand kit / custom assets. Null when no brand kit applied (no logo, lower-third, or endcard burned in).",
+      "additionalProperties": false,
+      "properties": {
+        "applied":       { "type": "boolean" },
+        "source":        { "enum": ["global", "project", "inline", "ref", "legacy", null] },
+        "assets_burned": {
+          "type": "array",
+          "items": { "enum": ["logo", "endcard", "lower_third"] }
+        },
+        "warnings": {
+          "type": "array",
+          "description": "Codes documented: brand_kit_unreadable, brand_kit_asset_oversize, brand_asset_missing, librsvg_not_available, brand_kit_ref_missing.",
+          "items": {
+            "type": "object",
+            "required": ["code"],
+            "additionalProperties": true,
+            "properties": {
+              "code":    { "type": "string" },
+              "asset":   { "type": "string" },
+              "message": { "type": "string" }
+            }
+          }
+        }
+      }
     }
   }
 }
