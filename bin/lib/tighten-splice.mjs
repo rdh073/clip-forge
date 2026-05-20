@@ -209,7 +209,7 @@ export function buildSpliceGraph({ plan, cropFilterArg, captionsPath, hasAudio, 
   }
   if (captionsPath) {
     const ascii = escapeAssPath(captionsPath);
-    videoParts.push(`${preCaptionLabel}ass='${ascii}'[vout]`);
+    videoParts.push(`${preCaptionLabel}ass=${ascii}[vout]`);
   } else {
     videoParts.push(`${preCaptionLabel}null[vout]`);
   }
@@ -272,6 +272,17 @@ function rangeLabels(prefix, n, infix = '') {
   return out;
 }
 
-function escapeAssPath(p) {
-  return p.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\\'");
+// Escape a path/value for use INSIDE an ffmpeg filter chain. Wrapping the
+// result in shell-style single quotes (`ass='/path'`) is non-portable —
+// macOS libavfilter rejects it, Linux tolerates it. Caller must NOT wrap
+// the return value in outer quotes; pass it raw into the filter string.
+export function escapeAssPath(p) {
+  return p
+    .replace(/\\/g, '\\\\')
+    .replace(/:/g, '\\:')
+    .replace(/,/g, '\\,')
+    .replace(/;/g, '\\;')
+    .replace(/'/g, "\\'")
+    .replace(/\[/g, '\\[')
+    .replace(/\]/g, '\\]');
 }

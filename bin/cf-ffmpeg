@@ -25,7 +25,7 @@ import {
   buildSplitScreenScript, summarizeSplitScreenSamples, chooseSplitAxis,
 } from './lib/crop-expression-builder.mjs';
 import { buildFfmpegPlan } from './lib/ffmpeg-encoder.mjs';
-import { assertPlanInvariants, buildSpliceGraph, JUNCTION_XFADE_S } from './lib/tighten-splice.mjs';
+import { assertPlanInvariants, buildSpliceGraph, JUNCTION_XFADE_S, escapeAssPath } from './lib/tighten-splice.mjs';
 import { computeJunctionMetrics } from './lib/junction-analyzer.mjs';
 import { buildRenderReport, writeRenderReport } from './lib/render-report.mjs';
 import {
@@ -191,9 +191,8 @@ async function ingest(src, dst) {
 
 async function captionBurn(src, ass, dst) {
   mkdirSync(dirname(dst), { recursive: true });
-  // ass filter needs escaped path
-  const ascii = ass.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\\'");
-  const plan = buildFfmpegPlan(['-i', src, '-vf', "ass='" + ascii + "'"], ['-c:a', 'copy', dst], {
+  const ascii = escapeAssPath(ass);
+  const plan = buildFfmpegPlan(['-i', src, '-vf', 'ass=' + ascii], ['-c:a', 'copy', dst], {
     cpuPreset: 'fast',
     cpuCrf: 20,
   });
@@ -300,8 +299,7 @@ export function planCropArgs({ crop, source, output, startMs, endMs, captionsPat
     let vf = decision.filterArg;
     if (overlayFilter) vf += ',' + overlayFilter;
     if (captionsPath && existsSync(captionsPath)) {
-      const ascii = captionsPath.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\\'");
-      vf += ",ass='" + ascii + "'";
+      vf += ',ass=' + escapeAssPath(captionsPath);
     }
     args.push('-vf', vf);
     if (audioSource) args.push('-map', '0:v', '-map', '1:a?');
@@ -328,8 +326,7 @@ function appendCaptionsToScript(captionsPath) {
   // Captions are inserted between the crop+scale chain output and [v]. The
   // filter-script body produced by buildFilterScript ends in '[v]\n'; we
   // splice an ass=… filter just before [v].
-  const ascii = captionsPath.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\\'");
-  return ",ass='" + ascii + "'";
+  return ',ass=' + escapeAssPath(captionsPath);
 }
 
 // Insert a Hook style + Dialogue into an existing captions.ass body without
