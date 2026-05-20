@@ -72,9 +72,18 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
-      - name: Install ffmpeg (macOS)
+      - name: Install ffmpeg with libass (macOS)
         if: matrix.os == 'macos-latest'
-        run: brew install ffmpeg
+        # Default `brew install ffmpeg` ships WITHOUT --enable-libass (verified
+        # via configure-line diagnostic in CI). The `homebrew-ffmpeg/ffmpeg`
+        # tap's formula is the "full build" — includes libass, libfreetype,
+        # libfontconfig and friends required for the `ass` / `subtitles`
+        # filters that v0.3.0 pillar i (hook overlay) + every render path
+        # since pillar 2 depend on.
+        run: |
+          brew uninstall --ignore-dependencies --force ffmpeg || true
+          brew tap homebrew-ffmpeg/ffmpeg
+          brew install homebrew-ffmpeg/ffmpeg/ffmpeg
 
       - name: Diagnose ffmpeg build (filter availability)
         run: |
