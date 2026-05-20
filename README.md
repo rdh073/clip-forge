@@ -47,6 +47,7 @@ ClipForge is closing.
 | **Prompt-driven editing**            | **✅**    | ✅       |
 | **AI B-roll fallback**               | **✅**    | ✅       |
 | **Avatar stingers**                  | **✅**    | ✅       |
+| **Speaker-aware reframe (split-screen)** | **✅**    | ✅       |
 
 Pillar (a) Filler-word & pause removal landed as `/clip-forge:tighten` —
 locale-aware filler dicts (en + id), silence detection, plan invariants,
@@ -315,6 +316,38 @@ Consent log path: `~/.clip-forge/.consent-log`. To revoke a single
 photo's consent, delete its `photos[<hash>]` entry. To revoke ALL
 consent, delete the file — next `/clip-forge:avatar` invocation
 re-prompts gate 1.
+
+## Multi-speaker content (v0.4.0 pillar 6)
+
+When a transcript carries per-word `speaker` labels (Deepgram diarizes
+natively), `cf-reframe` now detects sustained co-speech windows
+(≥ 1500 ms with ≥ 2 distinct speakers) and emits **split-screen
+samples** into `crop_path.json` (schema v3). The renderer composes a
+stack at render time, axis driven by `target_aspect`:
+
+| target_aspect | Stack axis | Panel dims (per speaker) |
+|---|---|---|
+| 9:16 | vstack (top / bottom) | 1080 × 960 |
+| 4:5  | vstack | 1080 × 675 |
+| 1:1  | hstack (left / right) | 540 × 1080 |
+| 16:9 | hstack | 960 × 1080 |
+
+**Identity stability:** within a split-screen window, `speaker_id 0`
+always occupies the LEFT (hstack) or TOP (vstack) panel. No mid-window
+flips.
+
+**Disable per clip:** pass `--speaker-route none` to `cf-reframe` to
+force single-face crop even on multi-speaker transcripts. The flag
+defaults to `auto` which behaves like v0.2.0 single-face when the
+transcript reports < 2 distinct speakers.
+
+**Splice interaction:** when a tighten plan with cuts is present
+alongside split-screen samples, the renderer emits a
+`split_screen_disabled_by_splice` warning and falls back to single-face.
+The combination is deferred to v0.5.0.
+
+Telemetry surfaces in `crop_path.json.speaker_timeline` (producer side)
+and `render_report.json.split_screen` (renderer side).
 
 ## 🔑 BYO API Keys (Optional Tier 2 Features)
 

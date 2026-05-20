@@ -130,7 +130,7 @@ export function buildRenderReport(input) {
     targetAspect, overlays, sidecars,
     aiCosts, ttsProviderUsed, ttsNondeterministic, dubLanguages,
     brandKit, rerender, llm,
-    stingers, brollAi,
+    stingers, brollAi, splitScreen,
   } = input;
 
   // Sign convention: av_drift_ms = video − audio (output is video post-concat;
@@ -170,6 +170,7 @@ export function buildRenderReport(input) {
     llm: llm ?? null,
     stingers: stingers ?? null,
     broll_ai: brollAi ?? null,
+    split_screen: splitScreen ?? null,
   };
 }
 

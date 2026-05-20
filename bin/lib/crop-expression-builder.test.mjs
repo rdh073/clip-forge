@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import {
   buildCropExpression, buildFilterArg, buildFilterScript,
   escapeFilterArg, chooseRenderMode, computeCropDims,
+  chooseSplitAxis, buildSplitScreenFilter, summarizeSplitScreenSamples,
 } from './crop-expression-builder.mjs';
 
 const baseCropPath = (samples = []) => ({
@@ -222,4 +223,133 @@ test('downsample preserves the first and last keyframes', () => {
   // First keyframe x = round(800 - 304) = 496; last = round(800 + 199*2 - 304) = 894
   assert.ok(exprX.includes('496'), 'first keyframe x=496 should be in expression: ' + exprX.slice(0, 60));
   assert.ok(exprX.includes('894'), 'last keyframe x=894 should be in expression');
+});
+
+// ----- v0.4.0 pillar 6: split-screen tests -----
+
+test('chooseSplitAxis: 9:16 → vstack', () => {
+  assert.equal(chooseSplitAxis('9:16'), 'vstack');
+});
+test('chooseSplitAxis: 4:5 → vstack', () => {
+  assert.equal(chooseSplitAxis('4:5'), 'vstack');
+});
+test('chooseSplitAxis: 1:1 → hstack', () => {
+  assert.equal(chooseSplitAxis('1:1'), 'hstack');
+});
+test('chooseSplitAxis: 16:9 → hstack', () => {
+  assert.equal(chooseSplitAxis('16:9'), 'hstack');
+});
+
+test('buildSplitScreenFilter: 9:16 emits vstack chain with two crop+scale panels', () => {
+  const sample = {
+    t_ms: 0,
+    split_screen: {
+      speakers: [
+        { speaker_id: 0, cx: 480,  cy: 540, scale: 1.4 },
+        { speaker_id: 1, cx: 1440, cy: 540, scale: 1.4 },
+      ],
+    },
+  };
+  const r = buildSplitScreenFilter({
+    sample, sourceW: 1920, sourceH: 1080,
+    targetW: 1080, targetH: 1920, targetAspect: '9:16',
+  });
+  assert.equal(r.axis, 'vstack');
+  assert.equal(r.panelW, 1080);
+  assert.equal(r.panelH, 960);
+  assert.match(r.filter, /vstack/);
+  assert.match(r.filter, /\[0:v\]crop=/);
+  // Two panel sub-chains.
+  assert.equal((r.filter.match(/crop=/g) || []).length, 2);
+});
+
+test('buildSplitScreenFilter: 16:9 emits hstack chain with two side-by-side panels', () => {
+  const sample = {
+    t_ms: 0,
+    split_screen: {
+      speakers: [
+        { speaker_id: 0, cx: 480,  cy: 540, scale: 1.4 },
+        { speaker_id: 1, cx: 1440, cy: 540, scale: 1.4 },
+      ],
+    },
+  };
+  const r = buildSplitScreenFilter({
+    sample, sourceW: 1920, sourceH: 1080,
+    targetW: 1920, targetH: 1080, targetAspect: '16:9',
+  });
+  assert.equal(r.axis, 'hstack');
+  assert.equal(r.panelW, 960);
+  assert.equal(r.panelH, 1080);
+  assert.match(r.filter, /hstack/);
+});
+
+test('buildSplitScreenFilter: speaker_id 0 is always FIRST in the stack (identity stability S3)', () => {
+  // Pass speakers in reversed order — builder MUST resort so speaker_id 0 is first.
+  const sample = {
+    t_ms: 0,
+    split_screen: {
+      speakers: [
+        { speaker_id: 1, cx: 1440, cy: 540, scale: 1.4 },
+        { speaker_id: 0, cx: 480,  cy: 540, scale: 1.4 },
+      ],
+    },
+  };
+  const r = buildSplitScreenFilter({
+    sample, sourceW: 1920, sourceH: 1080,
+    targetW: 1080, targetH: 1920, targetAspect: '9:16',
+  });
+  assert.deepEqual(r.speakerOrder, [0, 1], 'speaker_id 0 must precede 1 in the stack');
+  // The vstack line consumes [outLabel_p0][outLabel_p1] → speaker 0 on top.
+  assert.match(r.filter, /\[vss_p0\]\[vss_p1\]vstack/);
+});
+
+test('buildSplitScreenFilter: hstack axis with two speakers — speaker 0 on LEFT', () => {
+  const sample = {
+    t_ms: 0,
+    split_screen: {
+      speakers: [
+        { speaker_id: 0, cx: 480,  cy: 540, scale: 1.4 },
+        { speaker_id: 1, cx: 1440, cy: 540, scale: 1.4 },
+      ],
+    },
+  };
+  const r = buildSplitScreenFilter({
+    sample, sourceW: 1920, sourceH: 1080,
+    targetW: 1920, targetH: 1080, targetAspect: '16:9',
+  });
+  // hstack consumes left-then-right: speaker 0 is left because it's p0.
+  assert.match(r.filter, /\[vss_p0\]\[vss_p1\]hstack/);
+});
+
+test('buildSplitScreenFilter: missing speakers (<2) returns empty filter', () => {
+  const sample = { t_ms: 0, split_screen: { speakers: [{ speaker_id: 0, cx: 100, cy: 100, scale: 1.0 }] } };
+  const r = buildSplitScreenFilter({
+    sample, sourceW: 1920, sourceH: 1080,
+    targetW: 1080, targetH: 1920, targetAspect: '9:16',
+  });
+  assert.equal(r.filter, '');
+});
+
+test('summarizeSplitScreenSamples counts split samples and detected speakers', () => {
+  const cropPath = {
+    version: 3,
+    source_w: 1920, source_h: 1080,
+    target_w: 1080, target_h: 1920,
+    samples: [
+      { t_ms: 0, cx: 960, cy: 540, scale: 1.0 },
+      { t_ms: 1500, split_screen: { speakers: [
+        { speaker_id: 0, cx: 480,  cy: 540, scale: 1.4 },
+        { speaker_id: 1, cx: 1440, cy: 540, scale: 1.4 },
+      ] } },
+      { t_ms: 3000, split_screen: { speakers: [
+        { speaker_id: 0, cx: 480,  cy: 540, scale: 1.4 },
+        { speaker_id: 1, cx: 1440, cy: 540, scale: 1.4 },
+      ] } },
+      { t_ms: 4500, cx: 960, cy: 540, scale: 1.0 },
+    ],
+  };
+  const s = summarizeSplitScreenSamples(cropPath);
+  assert.equal(s.count, 2);
+  assert.deepEqual(s.speakers, [0, 1]);
+  assert.equal(s.total_duration_ms, 1500);
 });

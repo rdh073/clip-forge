@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "engine": "synthetic-single-speaker",
+  "language": "en",
+  "duration_s": 10,
+  "speakers": [
+    {
+      "id": 0,
+      "label": "A"
+    }
+  ],
+  "words": [
+    {
+      "w": "i",
+      "start_ms": 0,
+      "end_ms": 400,
+      "speaker": 0,
+      "confidence": 0.95
+    },
+    {
+      "w": "am",
+      "start_ms": 500,
+      "end_ms": 900,
+      "speaker": 0,
+      "confidence": 0.95
+    },
+    {
+      "w": "the",
+      "start_ms": 1000,
+      "end_ms": 1400,
+      "speaker": 0,
+      "confidence": 0.95
+    },
+    {
+      "w": "only",
+      "start_ms": 1500,
+      "end_ms": 1900,
+      "speaker": 0,
+      "confidence": 0.95
+    },
+    {
+      "w": "one",
+      "start_ms": 2000,
+      "end_ms": 2400,
+      "speaker": 0,
+      "confidence": 0.95
+    }
+  ],
+  "sentences": []
+}

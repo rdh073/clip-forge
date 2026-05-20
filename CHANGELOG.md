@@ -5,6 +5,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — v0.4.0 pillar 6: speaker-aware reframe + split-screen
+
+- New pure-logic library `bin/lib/speaker-timeline.mjs`. Walks the
+  per-word `speaker` field from `transcript.json` (Deepgram populates
+  this natively; Whisper does not — graceful warnings cover that case)
+  and emits time windows where ≥ 2 distinct speakers are active within
+  a 1500 ms sliding window. Pure function: no `Date.now`, no
+  `Math.random`, no `process.env` reads. Warnings:
+  `no_speaker_labels`, `single_speaker`, `diarize_low_confidence`.
+- `bin/cf-reframe` extended with `--speaker-route auto|none`. Default
+  `auto` weaves `split_screen` samples into the output crop path when
+  the transcript reports ≥ 2 distinct speakers; `none` forces v0.2.0
+  single-face behavior even on multi-speaker transcripts. Brief
+  overlap (< 1500 ms) collapses to the dominant speaker — no split
+  emitted. Sustained overlap emits one split sample per window.
+- `crop_path.json` schema bumped to **v3 (additive)**. v3 readers
+  consume v2 inputs unchanged. v2 readers receiving a v3 crop_path
+  without `split_screen` samples render identically to v2 (the
+  `speaker_timeline` block lives at the top level and is ignored).
+  v3 samples with `split_screen` carry per-speaker `{speaker_id, cx,
+  cy, scale}` instead of the v2 single-face `{cx, cy, scale}`.
+- `bin/lib/crop-expression-builder.mjs` extended with
+  `chooseSplitAxis(targetAspect)` (9:16 / 4:5 → vstack, 1:1 / 16:9 →
+  hstack), `buildSplitScreenFilter()` (per-window crop+scale+stack
+  fragment), `buildSplitScreenScript()` (full filter graph for a
+  multi-window split-screen render with overlay enable expressions),
+  `groupSplitScreenWindows()`, and `summarizeSplitScreenSamples()`.
+  **Identity stability invariant (S3):** speaker order in the filter
+  graph is forced ascending by `speaker_id` so `speaker_id 0` always
+  occupies the LEFT (hstack) or TOP (vstack) panel within a window.
+- `bin/cf-ffmpeg render` consumes v3 `crop_path` samples. When any
+  sample carries `split_screen`, the renderer uses a filter-script
+  path that builds the per-window stack and overlays it on the
+  single-face base stream with `enable='between(t, t0, t1)'`. Brand
+  kit, hook overlay, captions, and progress bar all compose downstream
+  of the split-screen output. Splice (tighten cuts) + split-screen
+  combo is unsupported in v0.4.0: the renderer emits a
+  `split_screen_disabled_by_splice` warning and falls back to
+  single-face when both are present. Deferred to v0.5.0.
+- `schemas/render_report.v1.json` extended additively with the
+  `split_screen` block: `{windows_count, total_duration_ms,
+  speakers_detected, stack_axis, warnings}`. Existing required-field
+  list unchanged.
+- README parity row "Speaker-aware reframe (split-screen)" flipped
+  to ✅. New section "Multi-speaker content" documents the aspect →
+  stack-axis mapping + the `--speaker-route` flag + the splice
+  deferral.
+
 ### Added — v0.4.0 pillar 5: AI B-roll + avatar stingers (BYO-key, moat-anchored)
 
 - New `/clip-forge:broll-ai` skill + `bin/cf-broll-ai` dispatcher.

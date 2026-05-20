@@ -62,7 +62,9 @@ test('cf-reframe end-to-end on demo video (skipped when ffmpeg missing)', { skip
   const out = JSON.parse(readFileSync(OUT_PATH, 'utf-8'));
 
   // Schema validation — must remain compatible with cf-ffmpeg.
-  assert.equal(out.version, 2, 'crop_path.json should be version 2');
+  // v0.4.0 pillar 6 bumped cf-reframe output to v3 (additive: v2 readers
+  // ignore unknown fields; v3 readers accept v2 inputs).
+  assert.equal(out.version, 3, 'crop_path.json should be version 3 (v0.4.0 pillar 6)');
   assert.equal(out.source_w, 1280);
   assert.equal(out.source_h, 720);
   assert.equal(out.target_w, 1080);
@@ -126,7 +128,7 @@ test('cf-reframe accepts --in / --out (v0.1.0 form) for backwards compat', { ski
   ], { encoding: 'utf-8' });
   assert.equal(r.status, 0, r.stderr);
   const out = JSON.parse(readFileSync(OUT_PATH, 'utf-8'));
-  assert.equal(out.version, 2);
+  assert.equal(out.version, 3);
   assert.ok(out.samples.length > 0);
   try { rmSync(OUT_PATH); } catch {}
 });

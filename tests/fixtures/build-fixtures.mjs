@@ -257,4 +257,59 @@ for (const f of VOCAB_FIXTURES) {
   process.stdout.write('  ✅ ' + out + '\n');
 }
 
+// ----- v0.4.0 pillar 6: 2-speaker dual-talking-head transcript fixture -----
+//
+// Deterministic synthetic transcript for the split-screen integration test.
+// The fixture pairs with an MP4 built at test-runtime via lavfi (one
+// left-half blue panel + one right-half red panel) so the renderer can
+// produce a vstack/hstack and we assert per-half luminance.
+
+const DUAL_TRANSCRIPT = {
+  version: 1,
+  engine: 'synthetic-dual-speaker',
+  language: 'en',
+  duration_s: 10.0,
+  speakers: [
+    { id: 0, label: 'A' },
+    { id: 1, label: 'B' },
+  ],
+  words: [
+    { w: 'hi',     start_ms: 0,    end_ms: 400,  speaker: 0, confidence: 0.95 },
+    { w: 'yo',     start_ms: 500,  end_ms: 900,  speaker: 1, confidence: 0.95 },
+    { w: 'right',  start_ms: 1000, end_ms: 1400, speaker: 0, confidence: 0.95 },
+    { w: 'sure',   start_ms: 1500, end_ms: 1900, speaker: 1, confidence: 0.95 },
+    { w: 'ok',     start_ms: 2000, end_ms: 2400, speaker: 0, confidence: 0.95 },
+    { w: 'yes',    start_ms: 2500, end_ms: 2900, speaker: 1, confidence: 0.95 },
+    { w: 'fine',   start_ms: 3000, end_ms: 3400, speaker: 0, confidence: 0.95 },
+    { w: 'cool',   start_ms: 3500, end_ms: 3900, speaker: 1, confidence: 0.95 },
+    { w: 'great',  start_ms: 4000, end_ms: 4400, speaker: 0, confidence: 0.95 },
+    { w: 'agree',  start_ms: 4500, end_ms: 4900, speaker: 1, confidence: 0.95 },
+    { w: 'right',  start_ms: 5000, end_ms: 5400, speaker: 0, confidence: 0.95 },
+    { w: 'so',     start_ms: 5500, end_ms: 5900, speaker: 1, confidence: 0.95 },
+  ],
+  sentences: [],
+};
+
+const SINGLE_SPEAKER_TRANSCRIPT = {
+  version: 1,
+  engine: 'synthetic-single-speaker',
+  language: 'en',
+  duration_s: 10.0,
+  speakers: [{ id: 0, label: 'A' }],
+  words: [
+    { w: 'i',    start_ms: 0,    end_ms: 400,  speaker: 0, confidence: 0.95 },
+    { w: 'am',   start_ms: 500,  end_ms: 900,  speaker: 0, confidence: 0.95 },
+    { w: 'the',  start_ms: 1000, end_ms: 1400, speaker: 0, confidence: 0.95 },
+    { w: 'only', start_ms: 1500, end_ms: 1900, speaker: 0, confidence: 0.95 },
+    { w: 'one',  start_ms: 2000, end_ms: 2400, speaker: 0, confidence: 0.95 },
+  ],
+  sentences: [],
+};
+
+writeFileSync(resolve(DIR, 'dual-speaker-10s.transcript.json'),
+  JSON.stringify(DUAL_TRANSCRIPT, null, 2) + '\n');
+writeFileSync(resolve(DIR, 'single-speaker-10s.transcript.json'),
+  JSON.stringify(SINGLE_SPEAKER_TRANSCRIPT, null, 2) + '\n');
+process.stdout.write('  ✅ dual-speaker-10s.transcript.json + single-speaker-10s.transcript.json\n');
+
 process.exit(allOk ? 0 : 1);

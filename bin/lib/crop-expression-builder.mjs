@@ -197,6 +197,231 @@ export function buildFilterScript(cropPath) {
   return '[0:v]' + buildFilterArg(cropPath) + '[v]\n';
 }
 
+// ----- v0.4.0 pillar 6: split-screen (speaker-aware reframe) -----
+//
+// crop_path.json schema v3 adds `split_screen` sample shape. A split-screen
+// sample carries per-speaker (cx, cy, scale) instead of the single-face
+// shape. The renderer stacks the two crops along an axis driven by
+// target_aspect (NOT source aspect):
+//   9:16 → vstack (top/bottom), each panel canvasH/2 tall
+//   4:5  → vstack
+//   1:1  → hstack (left/right), each panel canvasW/2 wide
+//   16:9 → hstack
+//
+// Identity stability invariant (S3): speaker_id 0 is ALWAYS the LEFT
+// (hstack) or TOP (vstack) panel within a single split_screen window.
+// We sort speakers ascending by speaker_id at build time so the stack
+// order is deterministic across the whole window.
+
+/**
+ * Pick the stack axis for a given target_aspect.
+ * @param {string} targetAspect e.g. '9:16', '1:1', '4:5', '16:9'
+ * @returns {'vstack'|'hstack'}
+ */
+export function chooseSplitAxis(targetAspect) {
+  switch (targetAspect) {
+    case '9:16': return 'vstack';
+    case '4:5':  return 'vstack';
+    case '1:1':  return 'hstack';
+    case '16:9': return 'hstack';
+    default:     return 'vstack';
+  }
+}
+
+/**
+ * Build the filter graph fragment for a single split-screen sample. Returns
+ * the body of a filter_complex chain that:
+ *   1. takes two copies of [0:v] (or upstream label),
+ *   2. crops each to the speaker's region,
+ *   3. scales each panel to (panelW × panelH),
+ *   4. stacks them via hstack or vstack into [outLabel].
+ *
+ * Caller is responsible for wiring this into the full -filter_complex
+ * graph (or filter-script file). speaker order in the sample MUST be
+ * ascending by speaker_id (the builder sorts to enforce S3).
+ *
+ * @param {object} sample      crop_path.json split_screen sample
+ * @param {number} sourceW
+ * @param {number} sourceH
+ * @param {number} targetW
+ * @param {number} targetH
+ * @param {string} targetAspect 'vstack' or 'hstack' driven via chooseSplitAxis
+ * @param {string} [inLabel='0:v']
+ * @param {string} [outLabel='vss']
+ * @returns {{filter:string, axis:'hstack'|'vstack', panelW:number, panelH:number, speakerOrder:number[]}}
+ */
+export function buildSplitScreenFilter({ sample, sourceW, sourceH, targetW, targetH, targetAspect, inLabel = '0:v', outLabel = 'vss' }) {
+  const axis = chooseSplitAxis(targetAspect);
+  const speakers = (sample && Array.isArray(sample.split_screen?.speakers))
+    ? sample.split_screen.speakers.slice().sort((a, b) => (a.speaker_id ?? 0) - (b.speaker_id ?? 0))
+    : [];
+  if (speakers.length < 2) {
+    return { filter: '', axis, panelW: targetW, panelH: targetH, speakerOrder: speakers.map((s) => s.speaker_id) };
+  }
+
+  // Panel dims: hstack splits width, vstack splits height.
+  const panelW = axis === 'hstack' ? Math.floor(targetW / 2) : targetW;
+  const panelH = axis === 'vstack' ? Math.floor(targetH / 2) : targetH;
+
+  // Source-pixel crop region per panel sized to the panel's aspect.
+  const { cropW, cropH } = computeCropDims(sourceW, sourceH, panelW, panelH);
+  const maxX = Math.max(0, sourceW - cropW);
+  const maxY = Math.max(0, sourceH - cropH);
+
+  const pieces = [];
+  const labels = [];
+  for (let i = 0; i < 2; i++) {
+    const sp = speakers[i];
+    const cx = sp.cx ?? sourceW / 2;
+    const cy = sp.cy ?? sourceH / 2;
+    const x = clamp(Math.round(cx - cropW / 2), 0, maxX);
+    const y = clamp(Math.round(cy - cropH / 2), 0, maxY);
+    const lbl = outLabel + '_p' + i;
+    pieces.push('[' + inLabel + ']crop=' + cropW + ':' + cropH + ':' + x + ':' + y + ',scale=' + panelW + ':' + panelH + '[' + lbl + ']');
+    labels.push(lbl);
+  }
+  pieces.push('[' + labels[0] + '][' + labels[1] + ']' + axis + '[' + outLabel + ']');
+
+  return {
+    filter: pieces.join(';'),
+    axis,
+    panelW,
+    panelH,
+    speakerOrder: speakers.map((s) => s.speaker_id),
+  };
+}
+
+/**
+ * Group consecutive split_screen samples into time windows. Each window
+ * spans [first_sample.t_ms, next_non_split_sample.t_ms OR Infinity).
+ * Returns `[{start_ms, end_ms, speakers}]` sorted by start_ms; speakers
+ * is the FIRST split sample's speakers array (window-locked per R4).
+ *
+ * @param {object} cropPath
+ * @returns {Array<{start_ms:number, end_ms:number, speakers:Array}>}
+ */
+export function groupSplitScreenWindows(cropPath) {
+  const samples = (cropPath && Array.isArray(cropPath.samples)) ? cropPath.samples : [];
+  const windows = [];
+  let cur = null;
+  for (let i = 0; i < samples.length; i++) {
+    const s = samples[i];
+    if (s && s.split_screen) {
+      if (!cur) {
+        cur = { start_ms: s.t_ms ?? 0, end_ms: s.t_ms ?? 0,
+                speakers: s.split_screen.speakers || [] };
+      } else {
+        cur.end_ms = s.t_ms ?? cur.end_ms;
+      }
+    } else if (cur) {
+      cur.end_ms = s.t_ms ?? cur.end_ms;
+      windows.push(cur);
+      cur = null;
+    }
+  }
+  if (cur) {
+    // Open-ended; close at last non-split sample time or the cropPath's
+    // effective end. We can't know without external duration so use
+    // Number.MAX_SAFE_INTEGER as sentinel; renderer clamps via -t/-to.
+    cur.end_ms = Number.MAX_SAFE_INTEGER;
+    windows.push(cur);
+  }
+  return windows;
+}
+
+/**
+ * Build the full -filter_complex script for a crop_path containing
+ * split_screen samples. Strategy:
+ *   1. Base [0:v] runs through the single-face crop+scale chain (the
+ *      existing if-ladder expression), producing [vbase].
+ *   2. For each split window, two crops + scale → vstack/hstack → [ss_i].
+ *   3. Each [ss_i] is overlaid onto [vbase] with `enable='between(t,t0,t1)'`.
+ *   4. Final stream is labelled [v] for the renderer's `-map [v]`.
+ *
+ * Returns the script body (newline-terminated) ready to write to a
+ * filter-script file.
+ *
+ * @param {object} cropPath
+ * @param {string} targetAspect e.g. '9:16'
+ * @returns {{script:string, axis:'hstack'|'vstack', windows:Array}}
+ */
+export function buildSplitScreenScript(cropPath, targetAspect) {
+  const sw = cropPath.source_w | 0;
+  const sh = cropPath.source_h | 0;
+  const tw = cropPath.target_w | 0;
+  const th = cropPath.target_h | 0;
+  const baseChain = buildFilterArg(cropPath);
+  const windows = groupSplitScreenWindows(cropPath);
+  const axis = chooseSplitAxis(targetAspect);
+
+  const lines = [];
+  lines.push('[0:v]' + baseChain + '[vbase]');
+
+  let prevLabel = 'vbase';
+  const winMeta = [];
+  for (let i = 0; i < windows.length; i++) {
+    const w = windows[i];
+    const ssLabel = 'ss_' + i;
+    // Build a per-window split fragment using a SYNTHETIC sample so we
+    // reuse buildSplitScreenFilter. Replace its [0:v] inputs with
+    // [0:v] (re-read source for each window — ffmpeg handles fan-out).
+    const fragment = buildSplitScreenFilter({
+      sample: { t_ms: w.start_ms, split_screen: { speakers: w.speakers } },
+      sourceW: sw, sourceH: sh, targetW: tw, targetH: th,
+      targetAspect, inLabel: '0:v', outLabel: ssLabel,
+    });
+    if (!fragment.filter) continue;
+    lines.push(fragment.filter);
+
+    const t0 = (w.start_ms / 1000).toFixed(3);
+    const t1Raw = (w.end_ms === Number.MAX_SAFE_INTEGER) ? 999999 : w.end_ms / 1000;
+    const t1 = t1Raw.toFixed(3);
+    const outLabel = (i === windows.length - 1) ? 'v' : ('vbase' + (i + 1));
+    lines.push('[' + prevLabel + '][' + ssLabel + ']overlay=x=0:y=0:enable=\'between(t,' + t0 + ',' + t1 + ')\'[' + outLabel + ']');
+    prevLabel = outLabel;
+    winMeta.push({ start_ms: w.start_ms, end_ms: w.end_ms, axis: fragment.axis });
+  }
+
+  // If no windows (shouldn't happen — caller checks first), passthrough
+  // base as [v].
+  if (winMeta.length === 0) {
+    lines.push('[vbase]null[v]');
+  } else if (prevLabel !== 'v') {
+    // The last overlay didn't get labelled [v] (shouldn't happen because
+    // we set outLabel='v' on the final iteration; defensive).
+    lines.push('[' + prevLabel + ']null[v]');
+  }
+  return { script: lines.join(';\n') + '\n', axis, windows: winMeta };
+}
+
+/**
+ * Inspect a crop_path and return summary stats about its split_screen
+ * samples. Used by the renderer to emit telemetry.
+ *
+ * @param {object} cropPath
+ * @returns {{count:number, total_duration_ms:number, speakers:number[]}}
+ */
+export function summarizeSplitScreenSamples(cropPath) {
+  const samples = (cropPath && Array.isArray(cropPath.samples)) ? cropPath.samples : [];
+  const ssSamples = samples.filter((s) => s && s.split_screen);
+  const speakerSet = new Set();
+  let totalMs = 0;
+  for (let i = 0; i < ssSamples.length; i++) {
+    const s = ssSamples[i];
+    const sNext = ssSamples[i + 1];
+    const dur = sNext ? Math.max(0, (sNext.t_ms ?? 0) - (s.t_ms ?? 0)) : 0;
+    totalMs += dur;
+    for (const spk of (s.split_screen.speakers || [])) {
+      speakerSet.add(spk.speaker_id);
+    }
+  }
+  return {
+    count: ssSamples.length,
+    total_duration_ms: totalMs,
+    speakers: Array.from(speakerSet).sort((a, b) => a - b),
+  };
+}
+
 /**
  * Pick the rendering mode for a given crop_path. Single source of truth so
  * tests can drive `cf-ffmpeg` mode decisions without invoking ffmpeg.

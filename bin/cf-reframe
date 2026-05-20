@@ -33,6 +33,11 @@ import {
   getLandmarkerProvider, getLandmarkerProviderFallbackReason,
 } from './lib/landmark-detector.mjs';
 import { ActiveSpeakerTracker, parseSpeakerMap, autoCalibrateSpeakerMap } from './lib/active-speaker.mjs';
+import {
+  buildSpeakerTimeline,
+  filterSplitScreenWindows,
+  totalSplitDurationMs,
+} from './lib/speaker-timeline.mjs';
 import { writeDebugPpm } from './lib/debug-frame.mjs';
 
 const TARGET_H_DEFAULT = 1920;
@@ -55,6 +60,7 @@ function parseArgs(argv) {
     jsonLogs: false,
     speakerMap: null,        // raw string; parsed later
     transcript: null,        // path
+    speakerRoute: null,      // 'auto' | 'none' | null (=auto-when-multi)
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -77,6 +83,7 @@ function parseArgs(argv) {
     else if (a === '--json-logs')         out.jsonLogs = true;
     else if (a === '--speaker-map')       out.speakerMap = argv[++i];
     else if (a === '--transcript')        out.transcript = argv[++i];
+    else if (a === '--speaker-route')     out.speakerRoute = argv[++i];
     else if (!a.startsWith('--') && !out.in) out.in = a; // positional source
     else die('unknown flag: ' + a);
   }
@@ -122,6 +129,7 @@ detection flags:
   --no-active-speaker       pick highest-confidence face only
   --speaker-map <spec>      'auto' | '0:left,1:right' | '0:0.25,0.5,1:0.75,0.5'
   --transcript <path>       transcript.json (enables audio cue)
+  --speaker-route auto|none default: auto (split-screen on ≥2 speakers); 'none' forces single-face
 
 smoothing flags:
   --max-pan-px-s N          velocity clamp (default: 80 src px/s)
@@ -460,6 +468,88 @@ function stddev(arr) {
   return Math.sqrt(variance);
 }
 
+/**
+ * v0.4.0 pillar 6: weave split_screen samples into the timeline.
+ *
+ * For each sustained-overlap window from buildSpeakerTimeline, we emit ONE
+ * split_screen sample at the window's start_ms. The renderer keys off the
+ * sample-level `split_screen` flag — between split samples and the next
+ * non-split sample, the renderer applies the split crop (sample-step
+ * semantics, matching how non-split samples work today).
+ *
+ * Speaker→source-position mapping:
+ *   1. If resolvedMap['<id>'] exists with normalized x/y → use that.
+ *   2. Else heuristic: speaker_id 0 → left half center, 1 → right half.
+ *
+ * Returns a new samples[] array (caller does not mutate input).
+ */
+function weaveSplitScreenSamples({ samples, transcript, srcW, srcH, speakerMap, minWindowMs = 1500 }) {
+  const result = { samples, ssWindows: [], speakersDetected: 0, totalSplitMs: 0, warnings: [] };
+  if (!transcript) return result;
+
+  const tl = buildSpeakerTimeline({ transcript, minWindowMs });
+  for (const w of tl.warnings) result.warnings.push(w);
+  result.speakersDetected = Object.keys(tl.speakers || {}).length;
+
+  const eligible = filterSplitScreenWindows(tl.windows, minWindowMs);
+  if (eligible.length === 0) return result;
+
+  result.totalSplitMs = totalSplitDurationMs(tl.windows, minWindowMs);
+  result.ssWindows = eligible;
+
+  const resolveSpeakerPos = (id) => {
+    const fromMap = speakerMap && speakerMap[String(id)];
+    if (fromMap && typeof fromMap.x === 'number' && typeof fromMap.y === 'number') {
+      return { cx: fromMap.x * srcW, cy: fromMap.y * srcH };
+    }
+    // Heuristic: id 0 → left-half center; id 1 → right-half center; etc.
+    const colCount = 2;
+    const col = (id % colCount);
+    return {
+      cx: ((col + 0.5) / colCount) * srcW,
+      cy: srcH / 2,
+    };
+  };
+
+  // Build new samples list: keep originals outside split windows, replace
+  // overlapping originals with one split_screen sample per window, then
+  // re-insert a single-face sample at the window's end_ms so the renderer
+  // returns to single-face mode for the next interval.
+  const inWindow = (tMs) => {
+    for (const w of eligible) {
+      if (tMs >= w.start_ms && tMs < w.end_ms) return w;
+    }
+    return null;
+  };
+  const out = [];
+  const emittedWindowStarts = new Set();
+  for (const s of samples) {
+    const w = inWindow(s.t_ms);
+    if (w) {
+      if (!emittedWindowStarts.has(w.start_ms)) {
+        const order = (w.active_speakers || []).slice().sort((a, b) => a - b);
+        const speakerSamples = order.slice(0, 2).map((id) => {
+          const pos = resolveSpeakerPos(id);
+          const scale = +(srcH / 1920).toFixed(3);
+          return { speaker_id: id, cx: Math.round(pos.cx), cy: Math.round(pos.cy), scale };
+        });
+        out.push({
+          t_ms: w.start_ms,
+          split_screen: { speakers: speakerSamples },
+        });
+        emittedWindowStarts.add(w.start_ms);
+      }
+    } else {
+      out.push(s);
+    }
+  }
+  // Sort by t_ms because we may have woven a window start earlier than the
+  // first kept sample after it.
+  out.sort((a, b) => a.t_ms - b.t_ms);
+  result.samples = out;
+  return result;
+}
+
 (async () => {
   const opts = parseArgs(process.argv.slice(2));
 
@@ -539,8 +629,43 @@ function stddev(arr) {
     detectorLabel = opts.fallbackMode + '-fallback';
   }
 
+  // ----- v0.4.0 pillar 6: speaker-aware reframe / split-screen -----
+  //
+  // Default behaviour: `--speaker-route` defaults to 'auto'. When unset
+  // explicitly we treat as auto. 'none' forces single-face even on
+  // multi-speaker transcripts (v0.2.0 behaviour preserved).
+  let transcriptForSplit = null;
+  if (opts.transcript) {
+    try { transcriptForSplit = JSON.parse(readFileSync(opts.transcript, 'utf-8')); }
+    catch { /* already warned during detectPath */ }
+  }
+  const routeMode = opts.speakerRoute || 'auto';
+  let ssWindowCount = 0;
+  let ssTotalMs = 0;
+  let ssSpeakersDetected = 0;
+  const ssWarnings = [];
+  if (routeMode === 'auto' && transcriptForSplit) {
+    const woven = weaveSplitScreenSamples({
+      samples, transcript: transcriptForSplit,
+      srcW, srcH, speakerMap: resolvedMap,
+    });
+    samples = woven.samples;
+    ssWindowCount = woven.ssWindows.length;
+    ssTotalMs = woven.totalSplitMs;
+    ssSpeakersDetected = woven.speakersDetected;
+    for (const w of woven.warnings) ssWarnings.push(w);
+  }
+  const speakerTimelineBlock = (routeMode !== 'none') ? {
+    windows_split_screen:   ssWindowCount,
+    total_split_duration_ms: ssTotalMs,
+    speakers_detected:      ssSpeakersDetected,
+    route_mode:             routeMode,
+    warnings:               ssWarnings,
+  } : { windows_split_screen: 0, total_split_duration_ms: 0,
+        speakers_detected: 0, route_mode: 'none', warnings: [] };
+
   const result = {
-    version: 2,
+    version: 3,
     clip_id: null,
     source_w: srcW,
     source_h: srcH,
@@ -559,6 +684,7 @@ function stddev(arr) {
     fallback_reason: reason,
     stats: stats || undefined,
     speaker_map: resolvedMap || undefined,
+    speaker_timeline: speakerTimelineBlock,
   };
 
   mkdirSync(dirname(resolvePath(opts.out)), { recursive: true });

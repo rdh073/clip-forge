@@ -20,7 +20,10 @@ import { readFileSync, existsSync, mkdirSync, writeFileSync, unlinkSync, statSyn
 import { dirname, resolve as resolvePath, join, basename } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
 
-import { chooseRenderMode, buildFilterScript } from './lib/crop-expression-builder.mjs';
+import {
+  chooseRenderMode, buildFilterScript,
+  buildSplitScreenScript, summarizeSplitScreenSamples, chooseSplitAxis,
+} from './lib/crop-expression-builder.mjs';
 import { buildFfmpegPlan } from './lib/ffmpeg-encoder.mjs';
 import { assertPlanInvariants, buildSpliceGraph, JUNCTION_XFADE_S } from './lib/tighten-splice.mjs';
 import { computeJunctionMetrics } from './lib/junction-analyzer.mjs';
@@ -232,8 +235,9 @@ async function watermark(src, logo, dst) {
 //
 // Exported (via the test helper below) so unit tests can assert argv shape
 // without invoking ffmpeg.
-export function planCropArgs({ crop, source, output, startMs, endMs, captionsPath, quality, audioSource, overlayFilter, deterministic, brandKitChain, brandKitFinalLabel, brandKitExtraInputs }) {
+export function planCropArgs({ crop, source, output, startMs, endMs, captionsPath, quality, audioSource, overlayFilter, deterministic, brandKitChain, brandKitFinalLabel, brandKitExtraInputs, targetAspect }) {
   const decision = chooseRenderMode(crop);
+  const hasSplitScreen = Array.isArray(crop.samples) && crop.samples.some((s) => s && s.split_screen);
 
   const args = [];
   if (typeof startMs === 'number') args.push('-ss', (startMs / 1000).toFixed(3));
@@ -248,15 +252,25 @@ export function planCropArgs({ crop, source, output, startMs, endMs, captionsPat
   }
   // Brand-kit overlays require multi-input filter_complex — force script
   // mode when the chain is present, otherwise the inline -vf path
-  // can't reference the extra inputs.
-  const useFilterScript = decision.mode === 'filter-script' || !!brandKitChain;
+  // can't reference the extra inputs. Split-screen ALSO requires script
+  // mode (multi-stream stack + overlay).
+  const useFilterScript = decision.mode === 'filter-script' || !!brandKitChain || hasSplitScreen;
 
   let scriptFile = null;
   if (useFilterScript) {
     scriptFile = join(tmpdir(), 'clip-forge-render-' + process.pid + '-' + Date.now() + '.fc');
     const overlayTail = overlayFilter ? ',' + overlayFilter : '';
     const captionTail = captionsPath ? appendCaptionsToScript(captionsPath) : '';
-    let body = buildFilterScript(crop);
+    let body;
+    if (hasSplitScreen) {
+      // Split-screen builds its own crop graph ending in [v]. We rewrite
+      // [v] downstream the same way the single-face path does so brand
+      // kit + overlay + captions still compose.
+      const ss = buildSplitScreenScript(crop, targetAspect || '9:16');
+      body = ss.script;
+    } else {
+      body = buildFilterScript(crop);
+    }
     if (brandKitChain && brandKitFinalLabel) {
       // Splice the brand-kit chain between crop+scale and the overlay/
       // caption tail. The crop script ends in `[v]\n`; rewrite to:
@@ -835,8 +849,21 @@ async function render({ manifest }) {
     }
   }
   const deterministic = process.env.CF_RENDER_DETERMINISTIC === '1';
-  const useSplice = tightenPlan && (tightenPlan.kept_segments || []).length >= 1
-                                 && (tightenPlan.cuts || []).length >= 1;
+  const cropHasSplitScreen = Array.isArray(crop.samples)
+                          && crop.samples.some((s) => s && s.split_screen);
+  // v0.4.0 pillar 6: split_screen + splice combo is unsupported. When both
+  // are present the renderer takes the splice path and emits a warning;
+  // the dominant-speaker single-face crop is used for the split window.
+  // Split-screen samples remain in crop_path.json for downstream tooling;
+  // they're inert in this render.
+  let useSplice = tightenPlan && (tightenPlan.kept_segments || []).length >= 1
+                                && (tightenPlan.cuts || []).length >= 1;
+  if (useSplice && cropHasSplitScreen) {
+    renderWarnings.push({
+      code: 'split_screen_disabled_by_splice',
+      message: 'split_screen samples present but tighten plan has cuts; split-screen layer skipped to keep splice graph tractable (deferred to v0.5.0).',
+    });
+  }
 
   // ----- Pillar 3 v0.4.0: brand-kit overlays + endcard append -----
   //
@@ -928,6 +955,7 @@ async function render({ manifest }) {
       overlayFilter,
       deterministic,
       brandKitChain, brandKitFinalLabel, brandKitExtraInputs,
+      targetAspect: canvas.name,
     });
     plan = { passes: [{ label: 'crop', ...cropPlan }], tmpFiles: cropPlan.scriptFile ? [cropPlan.scriptFile] : [], mode: cropPlan.mode, encoder: cropPlan.encoder };
     process.stdout.write(JSON.stringify({
@@ -1223,6 +1251,23 @@ async function render({ manifest }) {
       for (const l of m.dub_languages) if (!dubLanguages.includes(l)) dubLanguages.push(l);
     }
 
+    // v0.4.0 pillar 6 — split-screen telemetry block. Only emitted when
+    // crop_path.samples carries split_screen entries; renderer-side mirror
+    // of cropPath.speaker_timeline.
+    let splitScreenTelemetry = null;
+    if (cropHasSplitScreen) {
+      const sum = summarizeSplitScreenSamples(crop);
+      splitScreenTelemetry = {
+        windows_count:     sum.count,
+        total_duration_ms: sum.total_duration_ms,
+        speakers_detected: sum.speakers.length,
+        stack_axis:        chooseSplitAxis(canvas.name),
+        warnings:          useSplice ? [{ code: 'split_screen_disabled_by_splice',
+                                            message: 'split-screen layer skipped because splice was active' }]
+                                      : [],
+      };
+    }
+
     const report = buildRenderReport({
       clipId: m.clip_id ?? null,
       renderMode,
@@ -1247,6 +1292,7 @@ async function render({ manifest }) {
       brandKit: brandKitTelemetry.applied ? brandKitTelemetry : null,
       stingers: aiStingerTelemetry,
       brollAi:  aiBrollTelemetry,
+      splitScreen: splitScreenTelemetry,
     });
     writeRenderReport(report, reportPath);
 
