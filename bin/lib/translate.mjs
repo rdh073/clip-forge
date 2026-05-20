@@ -85,18 +85,112 @@ export async function translateTranscript({ transcript, source_lang, target_lang
   if (!resolved) {
     return { fallback_used: true, fallback_reason: 'no_translate_provider', cost_usd: 0 };
   }
-  // Real-network LLM path is implemented behind the same mock-injection
-  // contract pillar 4 will need. To keep pillar 2 honest, we exit with a
-  // graceful-degrade here so the dub skill surfaces a clear reason.
-  // Pillar 4 will replace this body with a real Groq/Anthropic call.
+  if (resolved === 'groq') {
+    return await translateViaGroq(brief);
+  }
+  // Anthropic real-network path deferred until pillar 4 lands; Groq is the
+  // primary cheap provider that unblocks production dub today.
   return {
     fallback_used:   true,
-    fallback_reason: 'translate_real_provider_not_yet_wired',
-    detail:          'pillar 2 ships only the mock + offline-fallback paths; ' +
-                     'pillar 4 (cf-edit) will wire the real LLM call. Set ' +
-                     'CF_TRANSLATE_MOCK=<path> to drive the contract today.',
+    fallback_reason: 'translate_provider_not_wired',
+    detail:          'pillar 2 wires only Groq for the real-network path; ' +
+                     'Anthropic Claude lands with pillar 4 cf-edit. Set ' +
+                     'GROQ_API_KEY for production dub, or CF_TRANSLATE_MOCK for tests.',
     cost_usd:        0,
     provider_used:   resolved,
+  };
+}
+
+// Distribute the original word timing schedule across N translated tokens.
+// Sentence-level timing is preserved by stretching across the sentence span;
+// per-word timing is best-effort (target-language word counts diverge from
+// source). For TTS downstream, sentence boundaries matter, not word boundaries.
+function reattachTiming(srcWords, translatedTokens) {
+  if (!Array.isArray(srcWords) || srcWords.length === 0 || translatedTokens.length === 0) {
+    return [];
+  }
+  const startMs = srcWords[0].start_ms ?? 0;
+  const endMs   = srcWords[srcWords.length - 1].end_ms ?? startMs;
+  const span    = Math.max(1, endMs - startMs);
+  const speakerById = srcWords[0].speaker ?? 0;
+  return translatedTokens.map((tok, i) => ({
+    w:          tok,
+    start_ms:   Math.round(startMs + (i / translatedTokens.length) * span),
+    end_ms:     Math.round(startMs + ((i + 1) / translatedTokens.length) * span),
+    speaker:    speakerById,
+    confidence: 0.85,
+  }));
+}
+
+async function translateViaGroq(brief) {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) {
+    return { fallback_used: true, fallback_reason: 'groq_key_missing', cost_usd: 0,
+             provider_used: 'groq' };
+  }
+  const tx       = brief.transcript || {};
+  const words    = Array.isArray(tx.words) ? tx.words : [];
+  const sourceText = words.map((w) => w.w || '').join(' ').trim();
+  if (!sourceText) {
+    return { transcript: { ...tx, language: brief.target_lang, words: [], text: '' },
+             cost_usd: 0, provider_used: 'groq' };
+  }
+  const sysPrompt =
+    'You translate transcripts. The user gives you a text in ' + (brief.source_lang || 'en') +
+    '. Translate it to ' + brief.target_lang + '. Reply with STRICT JSON only: ' +
+    '{"translated": "<the translation>"}. Preserve punctuation. ' +
+    'Do not add commentary, do not wrap in markdown.';
+  let r;
+  try {
+    r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'authorization': 'Bearer ' + apiKey,
+                 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',
+        messages: [
+          { role: 'system', content: sysPrompt },
+          { role: 'user',   content: sourceText },
+        ],
+        response_format: { type: 'json_object' },
+        temperature: 0,
+      }),
+    });
+  } catch (e) {
+    return { fallback_used: true, fallback_reason: 'groq_network_error',
+             detail: e.message, cost_usd: 0, provider_used: 'groq' };
+  }
+  if (!r.ok) {
+    return { fallback_used: true, fallback_reason: 'groq_http_' + r.status,
+             detail: (await r.text()).slice(0, 240), cost_usd: 0, provider_used: 'groq' };
+  }
+  let body;
+  try { body = await r.json(); }
+  catch (e) {
+    return { fallback_used: true, fallback_reason: 'groq_invalid_json',
+             detail: e.message, cost_usd: 0, provider_used: 'groq' };
+  }
+  let payload;
+  try { payload = JSON.parse(body.choices?.[0]?.message?.content || '{}'); }
+  catch (e) {
+    return { fallback_used: true, fallback_reason: 'groq_payload_invalid_json',
+             detail: e.message, cost_usd: 0, provider_used: 'groq' };
+  }
+  const translatedText = String(payload.translated || '').trim();
+  if (!translatedText) {
+    return { fallback_used: true, fallback_reason: 'groq_empty_translation',
+             cost_usd: 0, provider_used: 'groq' };
+  }
+  const tokens = translatedText.split(/\s+/).filter(Boolean);
+  const translatedWords = reattachTiming(words, tokens);
+  const usage = body.usage || {};
+  const costUsd = ((usage.prompt_tokens || 0) + (usage.completion_tokens || 0)) / 1_000_000
+                  * GROQ_COST_PER_M_TOKENS_USD;
+  return {
+    transcript: { ...tx, language: brief.target_lang, words: translatedWords,
+                  text: translatedText },
+    cost_usd:      Number(costUsd.toFixed(6)),
+    provider_used: 'groq',
   };
 }
 
