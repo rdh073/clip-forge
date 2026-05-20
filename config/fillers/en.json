@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "locale": "en",
+  "dict_version": "en-v1",
+  "notice": "Conservative English filler-word list. Cuts are also gated by --min-confidence (default 0.85) and --max-cut-ms (default 600). Edit this file or pass --fillers <path> to override. Multi-word phrases are matched greedy-longest-first.",
+  "fillers": [
+    "um",
+    "umm",
+    "uh",
+    "uhh",
+    "uhm",
+    "er",
+    "erm",
+    "ah",
+    "mhm",
+    "like",
+    "you know",
+    "i mean",
+    "sort of",
+    "kind of",
+    "basically",
+    "literally",
+    "actually"
+  ]
+}

@@ -5,7 +5,111 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Added
+### Added — Filler-word & silence removal pipeline
+
+- `/clip-forge:tighten` skill + `bin/cf-tighten` plan generator
+- Locale-aware filler dictionaries (`en`, `id` v2 with two-tier
+  always-cut vs context-only `context_fillers[]`)
+- `--aggressive` mode: false-start detection (single repeat only, < 150 ms
+  gap), context-filler cuts, confidence floor raised to 0.90,
+  triple-or-more repeats kept as intentional emphasis
+- `--dry-run`, `--json-logs`, `--keep-pause-ms`, `--min-confidence`,
+  `--max-cut-ms`, `--silence-threshold-db`, `--min-silence-ms`,
+  `--fillers <path>`, `--no-silence`, `--no-fillers`, `--locale en,id`
+- Plan invariants I1–I5 with renderer enforcement (range bounds, sorted
+  non-overlapping cuts, kept = complement(cuts), duration consistency,
+  source/clip coordinate parity)
+- Dual coordinate basis on every cut + kept segment (clip-relative
+  `start_ms` / `end_ms` for renderer, source-absolute `source_start_ms`
+  / `source_end_ms` for debug + cross-reference)
+- Idempotency contract — same inputs produce byte-identical
+  `tighten_plan.json` (stable key order, 2-space indent, trailing newline,
+  no timestamps/PIDs/hostnames in plan)
+- `warnings[]` array with structured `{code, message}` entries for soft
+  issues (`no_confidence`, `locale_fallback`, `filler_punct_speech_act`,
+  `triple_repeat_kept`, `context_filler_skipped_conservative`,
+  `speaker_id_missing_multiword`)
+- Punctuation-aware speech-act skip — filler matches followed by `?` or
+  `!` are kept (interrogative/exclamatory, not filler)
+- Stderr progress on long input seeks (`--start-ms > 0` AND seek > 5 s)
+
+### Added — Splice renderer
+
+- Two-pass render in `cf-ffmpeg`: audio splice encoded first, then
+  video+mux with `-c:a copy` — fixes the AAC tail-truncation bug present
+  in single-pass combined-encode mode (audio was losing ~160 ms when
+  video EOFed slightly before audio)
+- 8 ms `acrossfade` at each junction with `apad=pad_dur=(N-1)*0.008`
+  silent-tail compensation to keep audio length sample-exact
+- Junction quality telemetry (G1 sample-jump ratio with `kurtosis >= 3.0`
+  outlier floor, G2 spectral flatness < 0.5 in 80 ms window, G3
+  informational RMS spike). G3 status is `pass` or
+  `informational_warning` — never fails the render
+- `render_report.json` emitted next to every output mp4, schema-validated
+  on every write against `schemas/render_report.v1.json`. Includes per-pass
+  wall-clock, full per-junction telemetry, plan-warning passthrough, and
+  render-level warnings
+- `CF_RENDER_DETERMINISTIC=1` env var forces CPU encoder + bitexact +
+  single-threaded x264 (`sliced-threads=0:threads=1`) for byte-identical
+  per-stream MD5 across re-renders
+- Mode-aware A/V drift convention — `render_mode: "splice"` accepts
+  baseline negative drift (audio sample-exact, video frame-quantized at
+  source fps); `render_mode: "passthrough"` requires tight bilateral
+  drift. Warning codes: `av_drift_audio_overhang_excessive` (splice,
+  < −50 ms), `av_drift_video_longer_in_splice` (splice, > +50 ms),
+  `av_drift_unexpected_passthrough` (passthrough, |drift| > 10 ms)
+- Skill ordering validator — `edit.json` carrying `cuts` AND any of
+  `broll` / `transitions` / `music` exits non-zero with
+  `render: skill ordering violation — tighten plan present after
+  broll/transitions bake. Re-run tighten before broll/transitions.`
+- Filter graph length warning at > 8 KB (`filter_graph_length_near_limit`)
+- Zero-byte output guard exits non-zero and leaves no stub on disk
+- NDJSON progress events emit per pass with `{event:"progress",pass,pct}`
+
+### Added — Test infrastructure
+
+- `tests/fixtures/jfk-speech-10s.{mp4,transcript.json,LICENSE.md}` —
+  public-domain real-speech fixture (JFK 1961 inaugural address,
+  17 USC §105; muxed from whisper.cpp `samples/jfk.wav`)
+- `tests/fixtures/stress-plan-n50.json` — committed N=50 stress plan
+  (mulberry32 seeded for byte-determinism)
+- `tests/integration/tail-duration.test.mjs` (3 tests — 1 s, 5 s, 30 s)
+- `tests/integration/tighten-render.test.mjs` (9 tests — R4a, R4d, R4e,
+  R4f, R5, R6, ADD-1, ADD-3, ADD-4)
+- `tests/integration/tighten-reasr.test.mjs` (R4c — Whisper re-ASR via
+  `CF_WHISPER_URL`, skips cleanly on fresh checkouts)
+- `tests/integration/tighten-stress.test.mjs` (Phase C — N=50 stress,
+  ratio ≤ 2× baseline, schema valid, deterministic MD5 stable)
+- `schemas/render_report.v1.json` — JSON Schema draft-07 contract
+- `bin/lib/junction-analyzer.mjs` (pure FFT + sample-jump + kurtosis
+  primitives, no external deps)
+- `bin/lib/render-report.mjs` (hand-rolled JSON Schema validator subset
+  to avoid an ajv runtime dep)
+- `bin/lib/tighten-splice.mjs` (invariant assertions + splice graph
+  builder exposing separate video/audio chains for the two-pass renderer)
+
+### Performance
+
+- 30 s source + 5 cuts: 5.0 s default · 9.3 s deterministic (≈ 6× / 3× realtime)
+- 60 s source + 50 cuts: 8.0 s default — counterintuitively *faster* than
+  the no-cut baseline of the same source (less audio + video to encode
+  per pass)
+- Two-pass cost: audio splice ~10 % of total time; video+mux dominates
+
+### Known limitations (Phase C surfaces)
+
+- `skipped_smooth_no_click` G1 status surfaces naturally on tonal content
+  (sine waves, very clean speech) — kurtosis correctly identifies no
+  outlier signature, gate skips. Documented in
+  `skills/tighten/SKILL.md` "G1 status enum"
+- At N ≥ 30 cuts on 30 fps source, video frame-grid accumulation can push
+  `av_drift_ms` above +50 (audio remains splice-exact). Tracked in
+  `docs/ROADMAP.md` v0.3.1 "Tighten splice known characteristics"
+- `filter_complex` bytes scales linearly with N; warns at > 8 KB. Falls
+  well under ffmpeg's effective limits through at least N = 50. amix
+  fallback path documented in `docs/ROADMAP.md` v0.3.1 for future N > ~150
+
+### Added (carried)
 
 - Optional GPU acceleration with CPU fallback:
   `CF_FFMPEG_ENCODER=gpu` tries FFmpeg `h264_nvenc` before `libx264`, and

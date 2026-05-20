@@ -26,3 +26,6 @@ debug/
 *.swp
 .vscode/
 .idea/
+
+# whisper re-ASR cache for R4c
+tests/.cache/

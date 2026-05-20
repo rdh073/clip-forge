@@ -25,6 +25,27 @@ v0.1.x MediaPipe gap is closed; the v0.1.x renderer's "static crop from
 samples[0] only" (CR-2) is fixed via a piecewise crop expression that
 honours the full timeline.
 
+### Output-quality parity vs OpusClip
+
+Tracked from the v0.3.0 gap analysis ([docs/PLAN-v0.3.0.md](docs/PLAN-v0.3.0.md)).
+Each row is one of the five output-quality pillars OpusClip ships that
+ClipForge is closing.
+
+| Feature                              | ClipForge | OpusClip |
+|--------------------------------------|-----------|----------|
+| Face-tracked reframe (9:16 / 1:1)    | ✅        | ✅       |
+| Karaoke captions w/ emoji highlight  | ✅        | ✅       |
+| **Filler-word & pause removal**      | **✅**    | ✅       |
+| Speech enhance (loudnorm + denoise)  | ❌        | ✅       |
+| Brand vocabulary (custom dictionary) | ❌        | ✅       |
+| Prompt-based clipping                | ❌        | ✅       |
+| Hook overlay + progress bar          | ❌        | ✅       |
+
+Pillar (a) Filler-word & pause removal landed as `/clip-forge:tighten` —
+locale-aware filler dicts (en + id), silence detection, plan invariants,
+two-pass splice renderer with 8 ms acrossfade, schema-validated render
+report telemetry. See [skills/tighten/SKILL.md](skills/tighten/SKILL.md).
+
 **Known characteristics:**
 - PFLD inference is ~60 ms per face on CPU. A 30-minute source at 6 fps
   sampling processes in ~27 minutes end-to-end. See [Performance](#performance).
@@ -355,6 +376,29 @@ your machine, no API quotas, no subscriptions, no upload of source video.
 The [v0.3.0 roadmap](docs/ROADMAP.md) tracks the speed-up path: int8
 quantization, worker-thread parallelism, optional GPU execution provider.
 
+### Tighten render performance (v0.3.0)
+
+Measured on synthetic fixtures with `cf-ffmpeg render` (two-pass splice
++ ASR-quality telemetry generation). Numbers are median of 3 runs on
+Node 20, 4-core CPU.
+
+| Workload                                  | Mode                          | Wall-clock | Realtime ratio |
+|-------------------------------------------|-------------------------------|------------|----------------|
+| 30 s source, 5 cuts                       | Default (multi-threaded x264) | ~5.0 s     | 6× faster      |
+| 30 s source, 5 cuts                       | `CF_RENDER_DETERMINISTIC=1`   | ~9.3 s     | 3× faster      |
+| 60 s source, 50 cuts (Phase C stress)     | Default (multi-threaded x264) | ~8.0 s     | 7× faster      |
+
+Stress observation: at N = 50 cuts the wall-clock drops below the no-cut
+baseline of the same 60 s source — cuts reduce the amount of audio and
+video each encoder pass has to process. Performance scales gracefully
+through at least 50 junctions on a 9 KB `filter_complex`. See
+[`docs/ROADMAP.md`](docs/ROADMAP.md) v0.3.1 for known-issue notes
+(video frame-grid drift, filter graph length warnings).
+
+These numbers measure **only** the tighten splice render. Face-tracked
+reframe + caption bake + B-roll mix add their own costs as per the
+existing table above.
+
 ## Models & licenses
 
 | Model | Source | License | Notes |
@@ -409,6 +453,34 @@ produced a real face-tracked render — not just that exit code was 0:
 The test skips cleanly when fixtures or ONNX models aren't installed
 locally, so `npm test` on a fresh checkout stays green; the gate is on
 releases. Run `npm test` before any tag.
+
+### Reproducibility
+
+Production renders run multi-threaded x264 (or h264_nvenc on CUDA boxes)
+for speed. The tradeoff is that two runs of the same input produce
+byte-different MP4s — frames are scheduled across threads non-deterministically
+and the muxer stamps creation time into the container.
+
+For tests that need byte-identical output (e.g. the tighten splice
+idempotency assertion), set `CF_RENDER_DETERMINISTIC=1` before invoking
+`bin/cf-ffmpeg`:
+
+```bash
+CF_RENDER_DETERMINISTIC=1 node bin/cf-ffmpeg render --manifest edit.json
+```
+
+When the env var is set, `cf-ffmpeg` forces:
+
+- CPU encoder (`libx264`) — h264_nvenc has no deterministic mode
+- `-fflags +bitexact` — strips muxer timestamps / encoder identifier from output
+- `-tune zerolatency` + `-x264-params sliced-threads=0:threads=1` — single-threaded encode
+
+Determinism is asserted at the per-stream level (not file-level) using
+`ffmpeg -map 0:v -f md5 -` and `ffmpeg -map 0:a -f md5 -` separately — this
+isolates encoder determinism from any container-level non-determinism that
+might still leak through.
+
+Production renders should leave `CF_RENDER_DETERMINISTIC` unset.
 
 ## Roadmap
 

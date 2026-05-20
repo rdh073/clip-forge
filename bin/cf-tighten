@@ -1,0 +1,744 @@
+#!/usr/bin/env node
+// cf-tighten — emit a tighten_plan.json identifying ranges to cut from a
+// clip (filler words + silent gaps). Pure plan-generation; the splicing
+// itself happens inside cf-ffmpeg render at concat time.
+//
+// Pipeline:
+//   transcript.json (word-timed) → filler-word matcher (single + multi-word,
+//                                   greedy longest, confidence/duration gated,
+//                                   punct-aware speech-act skip)
+//   source.mp4 → `ffmpeg silencedetect` → silence ranges (keep-pause padded)
+//   merge + dedupe overlapping ranges → write tighten_plan.json
+//
+// Dual coordinate basis: every cut and kept segment carries BOTH clip-relative
+// (start_ms / end_ms, zero at --start-ms) AND source-absolute
+// (source_start_ms / source_end_ms). The renderer reads clip-relative;
+// debug / cross-ref tooling reads source-absolute.
+//
+// Idempotent: same inputs → byte-identical plan JSON. Insertion-ordered
+// object keys, 2-space indent, single trailing newline. No timestamps,
+// hostnames, or environment values appear in the plan.
+//
+// Graceful degradation: missing transcript, missing source, unreadable
+// filler dict, ffmpeg failure, transcript without per-word confidence —
+// each degrades to a partial plan and records a structured warning.
+// `fallback_used` is true only for the "hard" warning codes (input-level
+// failures); soft warnings (no_confidence, locale_fallback, context_filler
+// skipped, punct speech act) do not promote `fallback_used`.
+
+import { spawn, spawnSync } from 'node:child_process';
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { dirname, resolve as resolvePath, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = dirname(__filename);
+const PLUGIN_ROOT = resolvePath(__dirname, '..');
+const DEFAULT_DICT_DIR = join(PLUGIN_ROOT, 'config', 'fillers');
+
+const DEFAULTS = {
+  locale: 'en',
+  fillers: null,
+  keepPauseMs: 120,
+  silenceThresholdDb: -30,
+  minSilenceMs: 400,
+  minConfidence: 0.85,
+  maxCutMs: 600,
+  aggressive: false,
+  noSilence: false,
+  noFillers: false,
+  dryRun: false,
+};
+
+// Warning codes that promote `fallback_used: true`. Everything else is a
+// soft warning — recorded in `warnings[]` but does NOT flip fallback.
+const HARD_FALLBACK_CODES = new Set([
+  'transcript_missing',
+  'transcript_unreadable',
+  'source_missing',
+  'silencedetect_failed',
+  'filler_dict_unreadable',
+  'filler_dict_empty',
+]);
+
+const SECRET_RE = /[.,!?;:"'""''…\-‐-―]/g; // glued punctuation to strip
+
+// ----- arg parsing -----
+
+function parseArgs(argv) {
+  const out = {
+    transcript: null,
+    source: null,
+    output: null,
+    startMs: null,
+    endMs: null,
+    clipId: null,
+    jsonLogs: false,
+    minConfidenceExplicit: false,
+    ...DEFAULTS,
+  };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--help' || a === '-h') { printHelp(); process.exit(0); }
+    else if (a === '--transcript')            out.transcript = argv[++i];
+    else if (a === '--source')                out.source = argv[++i];
+    else if (a === '--output' || a === '--out') out.output = argv[++i];
+    else if (a === '--start-ms')              out.startMs = parseInt(argv[++i], 10);
+    else if (a === '--end-ms')                out.endMs = parseInt(argv[++i], 10);
+    else if (a === '--clip-id')               out.clipId = argv[++i];
+    else if (a === '--locale')                out.locale = argv[++i];
+    else if (a === '--fillers')               out.fillers = argv[++i];
+    else if (a === '--keep-pause-ms')         out.keepPauseMs = parseInt(argv[++i], 10);
+    else if (a === '--silence-threshold-db')  out.silenceThresholdDb = parseFloat(argv[++i]);
+    else if (a === '--min-silence-ms')        out.minSilenceMs = parseInt(argv[++i], 10);
+    else if (a === '--min-confidence')        { out.minConfidence = parseFloat(argv[++i]); out.minConfidenceExplicit = true; }
+    else if (a === '--max-cut-ms')            out.maxCutMs = parseInt(argv[++i], 10);
+    else if (a === '--aggressive')            out.aggressive = true;
+    else if (a === '--no-silence')            out.noSilence = true;
+    else if (a === '--no-fillers')            out.noFillers = true;
+    else if (a === '--dry-run')               out.dryRun = true;
+    else if (a === '--json-logs')             out.jsonLogs = true;
+    else die('unknown flag: ' + a);
+  }
+  if (!out.output && !out.dryRun) die('--output required (path to tighten_plan.json) unless --dry-run');
+  // Aggressive: floor confidence at 0.90 (user-explicit higher value wins).
+  if (out.aggressive) {
+    out.effectiveMinConfidence = Math.max(out.minConfidence, 0.90);
+  } else {
+    out.effectiveMinConfidence = out.minConfidence;
+  }
+  return out;
+}
+
+function printHelp() {
+  process.stdout.write(`cf-tighten — emit a tighten_plan.json (filler + silence cut ranges)
+
+usage:
+  cf-tighten --transcript <p> --source <p> --output <p> [flags]
+
+inputs:
+  --transcript <p>            word-timed transcript.json (ClipForge schema v1)
+  --source <p>                source mp4 (needed for silencedetect)
+  --start-ms N                clip range start (default 0)
+  --end-ms N                  clip range end (default source duration)
+  --clip-id ID                decorative pass-through into plan
+
+dict:
+  --locale en|id|en,id        built-in dict picker (default en)
+  --fillers <path>            custom dict JSON (replaces --locale)
+
+gates:
+  --min-confidence F          ASR confidence floor; default 0.85
+                              (raised to 0.90 under --aggressive)
+  --max-cut-ms N              never cut a span longer than this; default 600
+  --keep-pause-ms N           silence cushion on each side; default 120
+  --silence-threshold-db DB   silence floor; default -30
+  --min-silence-ms N          min gap to count as silence; default 400
+
+modes:
+  --aggressive                also cut single-repeat false starts and
+                              context_fillers; raises conf floor to 0.90;
+                              triple-or-more repeats stay (intentional emphasis)
+  --no-silence                skip silencedetect
+  --no-fillers                skip filler matching
+  --dry-run                   print summary to stdout, write nothing
+
+output:
+  --output <p>                tighten_plan.json target path (required unless --dry-run)
+  --json-logs                 NDJSON progress on stdout
+
+examples:
+  cf-tighten --transcript tx.json --source src.mp4 --output plan.json
+  cf-tighten --transcript tx.json --source src.mp4 --output plan.json \\
+             --start-ms 252000 --end-ms 298000 --clip-id c01 --locale en,id
+  cf-tighten --transcript tx.json --source src.mp4 --dry-run --aggressive
+`);
+}
+
+function die(msg, code = 1) {
+  process.stderr.write('cf-tighten: ' + msg + '\n');
+  process.exit(code);
+}
+
+function jlog(opts, obj) {
+  if (opts.jsonLogs) process.stdout.write(JSON.stringify({ event_seq: obj.event, ...obj }) + '\n');
+}
+
+function which(bin) {
+  const r = spawnSync('sh', ['-c', 'command -v ' + bin]);
+  return r.status === 0 ? r.stdout.toString().trim() : null;
+}
+
+function warn(warnings, code, message) {
+  warnings.push({ code, message });
+}
+
+function isFallback(warnings) {
+  return warnings.some((w) => HARD_FALLBACK_CODES.has(w.code));
+}
+
+function fmtTimestamp(ms) {
+  const totalS = ms / 1000;
+  const hh = String(Math.floor(totalS / 3600)).padStart(2, '0');
+  const mm = String(Math.floor((totalS % 3600) / 60)).padStart(2, '0');
+  const ss = (totalS % 60).toFixed(3).padStart(6, '0');
+  return `${hh}:${mm}:${ss}`;
+}
+
+// ----- transcript loading -----
+
+function loadTranscript(opts, warnings) {
+  if (!opts.transcript) {
+    warn(warnings, 'transcript_missing', 'no --transcript supplied');
+    return null;
+  }
+  if (!existsSync(opts.transcript)) {
+    warn(warnings, 'transcript_missing', `not found: ${opts.transcript}`);
+    return null;
+  }
+  try {
+    return JSON.parse(readFileSync(opts.transcript, 'utf-8'));
+  } catch (e) {
+    warn(warnings, 'transcript_unreadable', e.message);
+    return null;
+  }
+}
+
+// ----- filler dict loading -----
+
+function loadFillerDict(opts, warnings) {
+  // --fillers wins, then --locale (comma-separated merge), else 'en'.
+  if (opts.fillers) {
+    if (!existsSync(opts.fillers)) {
+      warn(warnings, 'filler_dict_unreadable', `not found: ${opts.fillers}`);
+      return loadBuiltinLocale('en', warnings, /*viaFallback*/ true);
+    }
+    try {
+      const dict = JSON.parse(readFileSync(opts.fillers, 'utf-8'));
+      return normalizeDict(dict, 'user');
+    } catch (e) {
+      warn(warnings, 'filler_dict_unreadable', e.message);
+      return loadBuiltinLocale('en', warnings, /*viaFallback*/ true);
+    }
+  }
+  const locales = (opts.locale || 'en').split(',').map((s) => s.trim()).filter(Boolean);
+  const merged = { fillers: [], contextFillers: [], dictVersion: locales.map((l) => l + '-v1').join('+') };
+  for (const loc of locales) {
+    const d = loadBuiltinLocale(loc, warnings);
+    if (d) {
+      for (const f of d.fillers) {
+        if (!merged.fillers.includes(f)) merged.fillers.push(f);
+      }
+      for (const f of d.contextFillers) {
+        if (!merged.contextFillers.includes(f)) merged.contextFillers.push(f);
+      }
+    }
+  }
+  if (merged.fillers.length === 0 && merged.contextFillers.length === 0) {
+    warn(warnings, 'filler_dict_empty', 'no locale dicts loaded');
+    return loadBuiltinLocale('en', warnings, true);
+  }
+  return merged;
+}
+
+function loadBuiltinLocale(locale, warnings, viaFallback = false) {
+  const path = join(DEFAULT_DICT_DIR, locale + '.json');
+  if (!existsSync(path)) {
+    if (viaFallback) {
+      warn(warnings, 'filler_dict_unreadable', `built-in ${locale} missing at ${path}`);
+    } else {
+      warn(warnings, 'locale_fallback', `locale '${locale}' not built-in; fell back to en-v1`);
+    }
+    return { fillers: [], contextFillers: [], dictVersion: locale + '-missing' };
+  }
+  try {
+    const dict = JSON.parse(readFileSync(path, 'utf-8'));
+    return normalizeDict(dict, locale);
+  } catch (e) {
+    warn(warnings, 'filler_dict_unreadable', `${locale} — ${e.message}`);
+    return { fillers: [], contextFillers: [], dictVersion: locale + '-error' };
+  }
+}
+
+function normalizeDict(dict, label) {
+  const fillers = Array.isArray(dict) ? dict
+                : Array.isArray(dict.fillers) ? dict.fillers
+                : [];
+  const contextFillers = Array.isArray(dict.context_fillers) ? dict.context_fillers : [];
+  return {
+    fillers: fillers.map((s) => String(s).toLowerCase().trim()).filter(Boolean),
+    contextFillers: contextFillers.map((s) => String(s).toLowerCase().trim()).filter(Boolean),
+    dictVersion: dict.dict_version || dict.version || label,
+  };
+}
+
+// ----- filler-word planning -----
+
+function normalizeWordToken(w) {
+  return String(w || '').toLowerCase().replace(SECRET_RE, '').trim();
+}
+
+function endsWithSpeechAct(rawWord) {
+  // Look at raw `w` field for trailing ? or ! glued onto the token.
+  const s = String(rawWord || '').trimEnd();
+  if (!s) return false;
+  const last = s[s.length - 1];
+  return last === '?' || last === '!';
+}
+
+function planFillerCuts(transcript, fillerDict, opts, warnings) {
+  if (!transcript || !Array.isArray(transcript.words) || transcript.words.length === 0) {
+    return [];
+  }
+  const startMs = opts.startMs ?? 0;
+  const endMs = opts.endMs ?? Number.MAX_SAFE_INTEGER;
+  const words = transcript.words.filter((w) =>
+    typeof w.start_ms === 'number' && typeof w.end_ms === 'number'
+    && w.start_ms >= startMs && w.end_ms <= endMs);
+  if (words.length === 0) return [];
+
+  const hasConfidence = words.some((w) => typeof w.confidence === 'number');
+  if (!hasConfidence) {
+    warn(warnings, 'no_confidence', 'transcript has no per-word confidence; gating by duration only');
+  }
+
+  // Build phrase list: hard fillers first, then context_fillers if aggressive.
+  // Each phrase tagged with its tier so we can emit a skip-warning for
+  // context fillers in conservative mode.
+  const hardPhrases = fillerDict.fillers.map((p) => ({ p, tier: 'filler' }));
+  const ctxPhrases = (fillerDict.contextFillers || []).map((p) => ({ p, tier: 'context_filler' }));
+  const allPhrases = [...hardPhrases, ...ctxPhrases].map(({ p, tier }) => {
+    const tokens = p.split(/\s+/).map((t) => t.toLowerCase()).filter(Boolean);
+    return { tokens, original: p, n: tokens.length, tier };
+  }).filter((p) => p.n > 0).sort((a, b) => b.n - a.n);
+
+  if (allPhrases.length === 0) return [];
+
+  const wordLowers = words.map((w) => normalizeWordToken(w.w));
+  const cuts = [];
+  const contextSkipsSeen = new Set();
+  const punctSpeechActSkipsSeen = new Set();
+  let i = 0;
+  while (i < words.length) {
+    let matched = null;
+    for (const ph of allPhrases) {
+      if (i + ph.n > words.length) continue;
+      let ok = true;
+      for (let j = 0; j < ph.n; j++) {
+        if (wordLowers[i + j] !== ph.tokens[j]) { ok = false; break; }
+      }
+      if (!ok) continue;
+      const span = words.slice(i, i + ph.n);
+
+      // Same-speaker check (avoid splicing across turns).
+      const speakers = new Set(span.map((w) => w.speaker ?? null));
+      if (speakers.size > 1) continue;
+      if (ph.n > 1 && speakers.has(null)) {
+        warn(warnings, 'speaker_id_missing_multiword',
+          `phrase '${ph.original}' spans words with no speaker tag — accepted`);
+      }
+
+      // Punctuation-aware speech-act skip: if the LAST word of the phrase
+      // is followed by ? or !, it's a speech act, not a filler.
+      const lastSpan = span[span.length - 1];
+      if (endsWithSpeechAct(lastSpan.w)) {
+        const key = `${ph.original}@${span[0].start_ms}`;
+        if (!punctSpeechActSkipsSeen.has(key)) {
+          warn(warnings, 'filler_punct_speech_act',
+            `skipped '${ph.original}' followed by ?/! — likely speech act, not filler`);
+          punctSpeechActSkipsSeen.add(key);
+        }
+        continue;
+      }
+
+      // Context fillers only cut under --aggressive.
+      if (ph.tier === 'context_filler' && !opts.aggressive) {
+        if (!contextSkipsSeen.has(ph.original)) {
+          warn(warnings, 'context_filler_skipped_conservative',
+            `context-marker '${ph.original}' skipped — pass --aggressive to cut`);
+          contextSkipsSeen.add(ph.original);
+        }
+        continue;
+      }
+
+      // Confidence gate (under aggressive: effectiveMinConfidence is 0.90 floor).
+      const conf = opts.effectiveMinConfidence;
+      if (hasConfidence) {
+        const minConf = Math.min(...span.map((w) => w.confidence ?? 1.0));
+        if (minConf < conf) continue;
+      }
+
+      const phStart = span[0].start_ms;
+      const phEnd = span[ph.n - 1].end_ms;
+      if (phEnd - phStart > opts.maxCutMs) continue;
+
+      matched = {
+        phStart, phEnd, n: ph.n, original: ph.original, tier: ph.tier,
+        confidenceMin: hasConfidence ? Math.min(...span.map((w) => w.confidence ?? 1)) : null,
+      };
+      break;
+    }
+    if (matched) {
+      const relStart = Math.max(0, matched.phStart - startMs);
+      const relEnd = matched.phEnd - startMs;
+      cuts.push({
+        start_ms: relStart,
+        end_ms: relEnd,
+        reason: matched.tier === 'context_filler' ? 'context_filler' : 'filler_word',
+        word: matched.original,
+        duration_ms: relEnd - relStart,
+        confidence_min: matched.confidenceMin == null ? null : +matched.confidenceMin.toFixed(3),
+      });
+      i += matched.n;
+    } else {
+      i++;
+    }
+  }
+
+  if (opts.aggressive) {
+    cuts.push(...planRepetitionCuts(words, opts, startMs, warnings));
+  }
+  return cuts;
+}
+
+function planRepetitionCuts(words, opts, basisStartMs, warnings) {
+  // False-start: same content word repeated. Aggressive rule:
+  //   - run length == 2 AND gap < 150 ms → cut the FIRST occurrence
+  //   - run length >= 3 → keep all (intentional emphasis), emit warning once
+  const cuts = [];
+  let i = 0;
+  while (i < words.length) {
+    const tok = normalizeWordToken(words[i].w);
+    if (!tok) { i++; continue; }
+
+    // Extend run while adjacent tokens match.
+    let j = i + 1;
+    while (j < words.length && normalizeWordToken(words[j].w) === tok) j++;
+    const runLen = j - i;
+
+    if (runLen >= 3) {
+      warn(warnings, 'triple_repeat_kept',
+        `kept ${runLen}× repetition of '${words[i].w}' — intentional emphasis`);
+      i = j;
+      continue;
+    }
+
+    if (runLen === 2) {
+      const gap = words[i + 1].start_ms - words[i].end_ms;
+      if (gap < 150) {
+        const dur = words[i].end_ms - words[i].start_ms;
+        if (dur <= opts.maxCutMs) {
+          const relStart = Math.max(0, words[i].start_ms - basisStartMs);
+          const relEnd = words[i].end_ms - basisStartMs;
+          if (relEnd > 0) {
+            cuts.push({
+              start_ms: relStart,
+              end_ms: relEnd,
+              reason: 'false_start',
+              word: words[i].w,
+              duration_ms: relEnd - relStart,
+              confidence_min: null,
+            });
+          }
+        }
+      }
+      i = j;
+      continue;
+    }
+
+    i++;
+  }
+  return cuts;
+}
+
+// ----- silence planning -----
+
+async function planSilenceCuts(opts, warnings) {
+  if (!opts.source) {
+    warn(warnings, 'source_missing', 'no --source supplied');
+    return [];
+  }
+  if (!existsSync(opts.source)) {
+    warn(warnings, 'source_missing', `not found: ${opts.source}`);
+    return [];
+  }
+  if (!which('ffmpeg')) {
+    warn(warnings, 'silencedetect_failed', 'ffmpeg not on PATH');
+    return [];
+  }
+  const minDurS = (opts.minSilenceMs / 1000).toFixed(3);
+  // Place -ss/-to AFTER -i for accurate seek so silencedetect timestamps are
+  // clip-relative (PTS resets after the input cut).
+  const args = ['-hide_banner', '-nostats', '-i', opts.source];
+  if (typeof opts.startMs === 'number') args.push('-ss', (opts.startMs / 1000).toFixed(3));
+  if (typeof opts.endMs === 'number')   args.push('-to', (opts.endMs / 1000).toFixed(3));
+  args.push('-af', 'silencedetect=noise=' + opts.silenceThresholdDb + 'dB:d=' + minDurS,
+            '-f', 'null', '-');
+
+  jlog(opts, { event: 'silencedetect_start', args });
+
+  return new Promise((resolve) => {
+    const t0 = Date.now();
+    // Stderr progress: only emit when --start-ms > 0 AND seek takes > 5s.
+    let seekNotified = false;
+    let seekTimer = null;
+    if (opts.startMs && opts.startMs > 0) {
+      seekTimer = setTimeout(() => {
+        seekNotified = true;
+        process.stderr.write(`cf-tighten: seeking to ${fmtTimestamp(opts.startMs)}...\n`);
+      }, 5000);
+    }
+
+    const p = spawn('ffmpeg', args);
+    const stderrChunks = [];
+    p.stderr.on('data', (c) => stderrChunks.push(c));
+    p.on('error', (e) => {
+      if (seekTimer) clearTimeout(seekTimer);
+      warn(warnings, 'silencedetect_failed', e.message);
+      resolve([]);
+    });
+    p.on('close', (code) => {
+      if (seekTimer) clearTimeout(seekTimer);
+      const elapsedS = (Date.now() - t0) / 1000;
+      if (seekNotified) {
+        process.stderr.write(`cf-tighten: done in ${elapsedS.toFixed(1)}s\n`);
+      }
+      const text = Buffer.concat(stderrChunks).toString();
+      if (code !== 0) {
+        warn(warnings, 'silencedetect_failed', `exit ${code}`);
+        resolve([]);
+        return;
+      }
+      resolve(parseSilenceOutput(text, opts));
+    });
+  });
+}
+
+function parseSilenceOutput(text, opts) {
+  // ffmpeg emits:
+  //   [silencedetect @ 0x...] silence_start: 12.345
+  //   [silencedetect @ 0x...] silence_end: 13.890 | silence_duration: 1.545
+  const cuts = [];
+  const lines = text.split('\n');
+  let curStart = null;
+  for (const line of lines) {
+    let m;
+    if ((m = line.match(/silence_start:\s*([-\d.]+)/))) {
+      curStart = parseFloat(m[1]) * 1000;
+    } else if ((m = line.match(/silence_end:\s*([-\d.]+)\s*\|\s*silence_duration:\s*([-\d.]+)/))) {
+      const endMs = parseFloat(m[1]) * 1000;
+      if (curStart != null) {
+        const cushion = opts.keepPauseMs;
+        const startMs = curStart + cushion;
+        const trimEndMs = endMs - cushion;
+        if (trimEndMs - startMs >= 1) {
+          cuts.push({
+            start_ms: Math.round(Math.max(0, startMs)),
+            end_ms: Math.round(trimEndMs),
+            reason: 'silence',
+            duration_ms: Math.round(trimEndMs - startMs),
+          });
+        }
+      }
+      curStart = null;
+    }
+  }
+  return cuts;
+}
+
+// ----- merge / dedupe -----
+
+function mergeCuts(cuts) {
+  if (cuts.length === 0) return [];
+  const sorted = [...cuts].sort((a, b) => a.start_ms - b.start_ms || a.end_ms - b.end_ms);
+  const out = [sorted[0]];
+  for (let i = 1; i < sorted.length; i++) {
+    const last = out[out.length - 1];
+    const cur = sorted[i];
+    // Treat <= 10 ms gap as touching — merge to avoid micro-segments that
+    // crossfades can't bridge cleanly.
+    if (cur.start_ms <= last.end_ms + 10) {
+      if (cur.end_ms > last.end_ms) last.end_ms = cur.end_ms;
+      if (cur.reason !== last.reason) last.reason = 'mixed';
+      last.duration_ms = last.end_ms - last.start_ms;
+    } else {
+      out.push(cur);
+    }
+  }
+  return out;
+}
+
+function buildKeptSegments(cuts, basisDurationMs) {
+  if (cuts.length === 0) return [{ start_ms: 0, end_ms: basisDurationMs }];
+  const kept = [];
+  let cursor = 0;
+  for (const c of cuts) {
+    if (c.start_ms > cursor) kept.push({ start_ms: cursor, end_ms: c.start_ms });
+    cursor = Math.max(cursor, c.end_ms);
+  }
+  if (cursor < basisDurationMs) kept.push({ start_ms: cursor, end_ms: basisDurationMs });
+  return kept;
+}
+
+// ----- source duration (when end-ms not supplied) -----
+
+function probeDurationMs(file) {
+  const r = spawnSync('ffprobe', [
+    '-v', 'error', '-print_format', 'json', '-show_format', file,
+  ]);
+  if (r.status !== 0) return null;
+  try {
+    const data = JSON.parse(r.stdout.toString());
+    const dur = parseFloat(data.format && data.format.duration);
+    return Number.isFinite(dur) ? Math.round(dur * 1000) : null;
+  } catch { return null; }
+}
+
+// ----- plan assembly (idempotent serialization) -----
+
+function decorateWithSource(items, basisStartMs) {
+  // Add source_start_ms / source_end_ms to every cut and kept segment.
+  // Insertion order matters for byte-stable JSON: source_* fields go
+  // immediately after start_ms/end_ms.
+  return items.map((it) => {
+    const out = {};
+    out.start_ms = it.start_ms;
+    out.end_ms = it.end_ms;
+    out.source_start_ms = basisStartMs + it.start_ms;
+    out.source_end_ms = basisStartMs + it.end_ms;
+    for (const k of Object.keys(it)) {
+      if (k === 'start_ms' || k === 'end_ms') continue;
+      out[k] = it[k];
+    }
+    return out;
+  });
+}
+
+function buildPlan(opts, basisDurationMs, mergedCuts, kept, warnings, fillerDict) {
+  const savedMs = mergedCuts.reduce((a, c) => a + (c.end_ms - c.start_ms), 0);
+
+  const decoratedCuts = decorateWithSource(mergedCuts, opts.startMs);
+  const decoratedKept = decorateWithSource(kept, opts.startMs);
+
+  // by_reason: deterministic by iteration order (mergedCuts is sorted).
+  const byReason = {};
+  for (const c of decoratedCuts) {
+    byReason[c.reason] = (byReason[c.reason] || 0) + 1;
+  }
+
+  // Settings: fixed insertion order for byte stability.
+  const settings = {
+    locale: opts.locale,
+    keep_pause_ms: opts.keepPauseMs,
+    silence_threshold_db: opts.silenceThresholdDb,
+    min_silence_ms: opts.minSilenceMs,
+    min_confidence: opts.minConfidence,
+    effective_min_confidence: opts.effectiveMinConfidence,
+    max_cut_ms: opts.maxCutMs,
+    aggressive: opts.aggressive,
+    no_silence: opts.noSilence,
+    no_fillers: opts.noFillers,
+  };
+
+  return {
+    version: 1,
+    clip_id: opts.clipId || null,
+    basis_start_ms: opts.startMs,
+    basis_end_ms: opts.endMs,
+    source_duration_ms: basisDurationMs,
+    output_duration_ms: Math.max(0, basisDurationMs - savedMs),
+    saved_ms: savedMs,
+    cuts: decoratedCuts,
+    kept_segments: decoratedKept,
+    by_reason: byReason,
+    settings,
+    filler_dict_version: fillerDict.dictVersion,
+    fallback_used: isFallback(warnings),
+    fallback_reason: isFallback(warnings)
+      ? warnings.filter((w) => HARD_FALLBACK_CODES.has(w.code))
+                .map((w) => `${w.code}: ${w.message}`).join('; ')
+      : null,
+    warnings,
+  };
+}
+
+// ----- main -----
+
+(async () => {
+  const opts = parseArgs(process.argv.slice(2));
+  const warnings = [];
+
+  const transcript = opts.noFillers ? null : loadTranscript(opts, warnings);
+  const fillerDict = opts.noFillers
+    ? { fillers: [], contextFillers: [], dictVersion: null }
+    : loadFillerDict(opts, warnings);
+
+  // Resolve basis range.
+  if (opts.startMs == null) opts.startMs = 0;
+  if (opts.endMs == null) {
+    let durMs = null;
+    if (opts.source && existsSync(opts.source)) durMs = probeDurationMs(opts.source);
+    if (durMs == null && transcript && typeof transcript.duration_s === 'number') {
+      durMs = Math.round(transcript.duration_s * 1000);
+    }
+    opts.endMs = (durMs ?? opts.startMs);
+  }
+  const basisDurationMs = Math.max(0, opts.endMs - opts.startMs);
+
+  jlog(opts, { event: 'basis', start_ms: opts.startMs, end_ms: opts.endMs,
+               duration_ms: basisDurationMs, locale: opts.locale,
+               dict_version: fillerDict.dictVersion,
+               effective_min_confidence: opts.effectiveMinConfidence });
+
+  const fillerCuts = opts.noFillers ? []
+                                    : planFillerCuts(transcript, fillerDict, opts, warnings);
+  jlog(opts, { event: 'filler_cuts', count: fillerCuts.length });
+
+  const silenceCuts = opts.noSilence ? []
+                                     : await planSilenceCuts(opts, warnings);
+  jlog(opts, { event: 'silence_cuts', count: silenceCuts.length });
+
+  const merged = mergeCuts([...fillerCuts, ...silenceCuts])
+    // Clamp to basis range — silencedetect can occasionally over-report.
+    .map((c) => ({
+      ...c,
+      start_ms: Math.max(0, Math.min(c.start_ms, basisDurationMs)),
+      end_ms:   Math.max(0, Math.min(c.end_ms,   basisDurationMs)),
+    }))
+    .filter((c) => c.end_ms > c.start_ms)
+    .map((c) => ({ ...c, duration_ms: c.end_ms - c.start_ms }));
+
+  const kept = buildKeptSegments(merged, basisDurationMs);
+  const plan = buildPlan(opts, basisDurationMs, merged, kept, warnings, fillerDict);
+
+  if (opts.dryRun) {
+    const summary = {
+      event: 'dry_run',
+      cuts: plan.cuts.length,
+      saved_ms: plan.saved_ms,
+      source_duration_ms: plan.source_duration_ms,
+      output_duration_ms: plan.output_duration_ms,
+      by_reason: plan.by_reason,
+      warnings: plan.warnings.length,
+      fallback_used: plan.fallback_used,
+    };
+    process.stdout.write(JSON.stringify(summary) + '\n');
+    return;
+  }
+
+  mkdirSync(dirname(resolvePath(opts.output)), { recursive: true });
+  // Byte-stable serialization: 2-space indent + single trailing newline.
+  writeFileSync(opts.output, JSON.stringify(plan, null, 2) + '\n');
+
+  process.stdout.write(JSON.stringify({
+    event: 'done',
+    cuts: plan.cuts.length,
+    saved_ms: plan.saved_ms,
+    source_duration_ms: plan.source_duration_ms,
+    output_duration_ms: plan.output_duration_ms,
+    fallback_used: plan.fallback_used,
+    fallback_reason: plan.fallback_reason,
+    warnings: plan.warnings.length,
+    output: opts.output,
+  }) + '\n');
+})();

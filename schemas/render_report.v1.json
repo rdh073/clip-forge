@@ -1,0 +1,129 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "render_report.v1",
+  "title": "ClipForge render report v1",
+  "description": "Telemetry written by bin/cf-ffmpeg render next to every output mp4. Captures duration math, encoder choice, two-pass wall times, splice plan metadata, per-junction quality gates (G1 sample-jump ratio, G2 spectral flatness, G3 RMS spike), and render-level warnings. Schema validated on every emit; failure exits non-zero.",
+  "type": "object",
+  "required": ["schema", "version", "render_mode", "clip_id", "input_duration_ms", "output_duration_ms", "audio_duration_ms", "av_drift_ms", "encoder", "deterministic", "passes", "filter_complex_bytes", "junction_xfade_s", "junctions", "warnings"],
+  "additionalProperties": false,
+  "properties": {
+    "schema":      { "const": "render_report.v1" },
+    "version":     { "const": 1 },
+    "render_mode": { "enum": ["splice", "passthrough"],
+                     "description": "splice if edit.json carries a tighten_plan ref with cuts_count > 0; passthrough otherwise." },
+    "clip_id":     { "type": ["string", "null"] },
+    "input_duration_ms":  { "type": "number", "minimum": 0 },
+    "output_duration_ms": { "type": "number", "minimum": 0 },
+    "audio_duration_ms":  { "type": "number", "minimum": 0 },
+    "av_drift_ms":        { "type": "number",
+                             "description": "video_duration_ms - audio_duration_ms. Positive = video longer (typical, frame-grid quantization). Negative = audio longer (anomaly)." },
+    "encoder":       { "type": "string" },
+    "deterministic": { "type": "boolean" },
+    "passes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "wall_ms"],
+        "additionalProperties": false,
+        "properties": {
+          "name":    { "type": "string" },
+          "wall_ms": { "type": "number", "minimum": 0,
+                       "description": "Wall-clock from ffmpeg spawn() to exit event, exclusive of pre/post I/O. Date.now() deltas." }
+        }
+      }
+    },
+    "filter_complex_bytes": { "type": "integer", "minimum": 0 },
+    "junction_xfade_s":     { "type": "number",  "minimum": 0,
+                               "description": "Forensic trail of the JUNCTION_XFADE_S constant value used for this render." },
+    "tighten": {
+      "type": ["object", "null"],
+      "required": ["plan_path", "kept_segments_count", "cuts_count", "saved_ms", "warnings_from_plan"],
+      "additionalProperties": false,
+      "properties": {
+        "plan_path":           { "type": "string" },
+        "kept_segments_count": { "type": "integer", "minimum": 0 },
+        "cuts_count":          { "type": "integer", "minimum": 0 },
+        "saved_ms":            { "type": "number",  "minimum": 0 },
+        "warnings_from_plan": {
+          "type": "array",
+          "description": "Verbatim passthrough of tighten_plan.warnings. Renderer must copy without filtering; future plan fields are preserved.",
+          "items": {
+            "type": "object",
+            "required": ["code", "message"],
+            "properties": {
+              "code":    { "type": "string" },
+              "message": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "junctions": {
+      "type": "array",
+      "description": "One entry per cut junction in output-time order. Empty array on non-splice renders.",
+      "items": {
+        "type": "object",
+        "required": ["index", "time_ms", "g1", "g2", "g3", "warnings"],
+        "additionalProperties": false,
+        "properties": {
+          "index":   { "type": "integer", "minimum": 0 },
+          "time_ms": { "type": "number",  "minimum": 0,
+                       "description": "Junction center in OUTPUT coordinates (post-acrossfade)." },
+          "g1": {
+            "type": "object",
+            "required": ["ratio", "jump_with_xfade", "jump_no_xfade", "kurtosis_no_xfade_narrow", "status"],
+            "additionalProperties": false,
+            "properties": {
+              "ratio":            { "type": ["number", "null"],
+                                    "description": "jump_with_xfade / jump_no_xfade. null when status is skipped_*." },
+              "jump_with_xfade":  { "type": "integer", "minimum": 0 },
+              "jump_no_xfade":    { "type": "integer", "minimum": 0 },
+              "kurtosis_no_xfade_narrow": { "type": "number",
+                                            "description": "Excess kurtosis of the diff signal s[i]-s[i-1] over the no-xfade synthesized 5ms (±2.5ms) window. Used by split-condition (b). Range: -2 (uniform/platykurtic) through 0 (Gaussian) up to ~1000+ (sharp single-sample click). >= 3.0 indicates outlier (click-like) character; below = smooth speech variation." },
+              "status": { "enum": ["pass", "fail", "skipped_below_floor", "skipped_smooth_no_click"] }
+            }
+          },
+          "g2": {
+            "type": "object",
+            "required": ["flatness_with_xfade_wide", "flatness_no_xfade_wide", "status"],
+            "additionalProperties": false,
+            "properties": {
+              "flatness_with_xfade_wide": { "type": "number", "minimum": 0,
+                                            "description": "Spectral flatness of rendered output's 80ms window around junction." },
+              "flatness_no_xfade_wide":   { "type": "number", "minimum": 0,
+                                            "description": "Spectral flatness of synthesized no-xfade 80ms window from source." },
+              "status": { "enum": ["pass", "fail"] }
+            }
+          },
+          "g3": {
+            "type": "object",
+            "required": ["rms_delta_db", "status"],
+            "additionalProperties": false,
+            "properties": {
+              "rms_delta_db": { "type": "number" },
+              "status":       { "enum": ["pass", "informational_warning"] }
+            }
+          },
+          "warnings": {
+            "type": "array",
+            "description": "Codes only, no per-junction messages. Documented codes: rms_intrinsic_amplitude_difference, junction_below_click_floor, junction_tonal_no_click.",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "description": "Render-level warnings (filter_graph_length_near_limit, aac_priming_overhead, junction_too_short_for_xfade, etc.). Same shape as plan warnings.",
+      "items": {
+        "type": "object",
+        "required": ["code", "message"],
+        "additionalProperties": false,
+        "properties": {
+          "code":    { "type": "string" },
+          "message": { "type": "string" }
+        }
+      }
+    }
+  }
+}

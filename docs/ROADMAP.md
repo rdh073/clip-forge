@@ -102,6 +102,42 @@ between minors".
 - **Fix CLI ergonomics (W-4, W-5):** error on conflicting `--in` +
   positional source, route debug-write errors to stderr unconditionally.
 
+## v0.3.1 — Tighten splice known characteristics
+
+Tracked from Phase C (N=50) stress measurements landed alongside the
+v0.3.0 filler/silence removal pillar. Each item is observable today via
+the `av_drift_*` or `filter_graph_length_near_limit` warnings in
+`render_report.json`. None block ship; revisit if/when production
+telemetry shows them on real footage.
+
+- **High-N video frame-grid drift.** At 50 cuts on a 30 fps source, the
+  rendered video runs ~158 ms longer than audio (audio is splice-exact at
+  48 kHz; video accumulates ~0.1 frame of quantization at each cut
+  boundary). Surfaces as `av_drift_video_longer_in_splice` warning when
+  drift > 50 ms. Functional impact is negligible at typical N (≤ 10);
+  becomes a several-frame tail-pad at N ≥ 30. Two known mitigations if
+  the warning gets noisy:
+  - Round each cut's `start_ms` / `end_ms` down to the source-fps frame
+    grid (changes invariants — would need plan-schema rework).
+  - Crop the video tail to match audio in the muxer (Option B from the
+    original A/V sync design; we rejected it for low-N where dropping a
+    final frame mid-syllable is worse than a few ms of silence pad).
+- **filter_graph_length_near_limit at high N.** At N = 50 the
+  `filter_complex` string is ~9 KB — just above the 8 KB warn threshold,
+  well under ffmpeg's effective ~64 KB hard limit on modern builds. No
+  action needed; warning is preventive telemetry. If a future plan hits
+  a hard limit, the fallback would be `amix=inputs=N`-based audio
+  reconstruction instead of chained `acrossfade`, plus
+  `concat=n=N:v=1:a=0` already used for video. Decision threshold based
+  on measurement: trigger the amix fallback only when actual graph
+  approaches ~32 KB (still leaves headroom).
+- **Performance scaling at high N is non-monotonic.** Phase C measured
+  the N = 50 stress render as ~0.81× the wall-clock of a single-cut
+  baseline on the same 60 s source — counterintuitively *faster* because
+  cuts reduce the total samples each pass has to process. Don't bake any
+  perf-regression assertion around N alone; future regression tests
+  should hold N constant and vary content / cut layout.
+
 ## v0.4.0 — Real publishing
 
 - TikTok OAuth flow (currently stubbed `auth_required`).

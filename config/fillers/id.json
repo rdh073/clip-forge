@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "locale": "id",
+  "dict_version": "id-v2",
+  "notice": "Conservative Indonesian filler-word list. Split into two tiers: `fillers` are always-cut hesitation tokens with no semantic load. `context_fillers` are tokens that often function as discourse markers / emphasis particles and are cut ONLY with --aggressive. Excludes load-bearing particles (ya, kan, lah, nah, sih) which are grammatical, not filler. Phrases like 'apa namanya' are matched greedy-longest-first. Override or extend via config/fillers/id.local.json or --fillers <path>.",
+  "fillers": [
+    "apa namanya",
+    "itu lho",
+    "itu loh",
+    "pokoknya",
+    "kayak",
+    "kayaknya",
+    "begini",
+    "intinya",
+    "atau apalah",
+    "atau apa lah"
+  ],
+  "context_fillers": [
+    "eh",
+    "anu",
+    "gini",
+    "gitu",
+    "apa ya"
+  ]
+}

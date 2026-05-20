@@ -16,12 +16,17 @@
 // docs/bench-v0.2.0.md for why we don't use ffmpeg sendcmd here.
 
 import { spawn, spawnSync } from 'node:child_process';
-import { readFileSync, existsSync, mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
-import { dirname, resolve as resolvePath, join } from 'node:path';
+import { readFileSync, existsSync, mkdirSync, writeFileSync, unlinkSync, statSync } from 'node:fs';
+import { dirname, resolve as resolvePath, join, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { chooseRenderMode, buildFilterScript } from './lib/crop-expression-builder.mjs';
 import { buildFfmpegPlan } from './lib/ffmpeg-encoder.mjs';
+import { assertPlanInvariants, buildSpliceGraph, JUNCTION_XFADE_S } from './lib/tighten-splice.mjs';
+import { computeJunctionMetrics } from './lib/junction-analyzer.mjs';
+import { buildRenderReport, writeRenderReport } from './lib/render-report.mjs';
+
+const GRAPH_SIZE_WARN_BYTES = 8192;
 
 function die(msg, code = 1) {
   process.stderr.write('cf-ffmpeg: ' + msg + '\n');
@@ -61,6 +66,7 @@ function runFfmpeg(args, { onProgress } = {}) {
 }
 
 async function runFfmpegPlan(plan, opts = {}) {
+  const t0 = Date.now();
   try {
     await runFfmpeg(plan.args, opts);
   } catch (e) {
@@ -73,21 +79,54 @@ async function runFfmpegPlan(plan, opts = {}) {
     }) + '\n');
     await runFfmpeg(plan.fallbackArgs, opts);
   }
+  // T3: wall_ms = ffmpeg spawn() → exit, exclusive of pre/post I/O.
+  plan.wallMs = Date.now() - t0;
+}
+
+// Extract a stream's PCM (mono int16 LE 48 kHz) to a temp file. Returns the
+// path. Caller cleans up. Used to decode rendered output's audio for
+// junction analysis, and to decode source audio (post-seek) for the
+// no-xfade synthesis windows.
+function extractMonoPcm({ source, output, startMs, endMs }) {
+  const args = ['-y', '-hide_banner', '-loglevel', 'error'];
+  if (typeof startMs === 'number') args.push('-ss', (startMs / 1000).toFixed(3));
+  if (typeof endMs   === 'number') args.push('-to', (endMs   / 1000).toFixed(3));
+  args.push('-i', source, '-vn', '-ac', '1', '-ar', '48000', '-f', 's16le', '-c:a', 'pcm_s16le', output);
+  const r = spawnSync('ffmpeg', args);
+  if (r.status !== 0) {
+    throw new Error('extractMonoPcm: ' + (r.stderr ? r.stderr.toString().split('\n').slice(-3).join(' ') : 'exit ' + r.status));
+  }
+}
+
+function readPcm(path) {
+  const buf = readFileSync(path);
+  return new Int16Array(buf.buffer, buf.byteOffset, Math.floor(buf.byteLength / 2));
 }
 
 function firstLine(msg) {
   return String(msg || '').split('\n').find(Boolean) || 'ffmpeg failed';
 }
 
-async function probe(file) {
+function probeStreams(file) {
   const r = spawnSync('ffprobe', [
-    '-v', 'error',
-    '-print_format', 'json',
-    '-show_streams', '-show_format',
-    file,
+    '-v', 'error', '-print_format', 'json',
+    '-show_streams', '-show_format', file,
   ]);
-  if (r.status !== 0) die('ffprobe failed: ' + r.stderr.toString());
-  const data = JSON.parse(r.stdout.toString());
+  if (r.status !== 0) return { ok: false, stderr: r.stderr.toString(), data: null };
+  try { return { ok: true, data: JSON.parse(r.stdout.toString()) }; }
+  catch (e) { return { ok: false, stderr: e.message, data: null }; }
+}
+
+function hasAudioStream(file) {
+  const p = probeStreams(file);
+  if (!p.ok) return false;
+  return (p.data.streams || []).some((s) => s.codec_type === 'audio');
+}
+
+async function probe(file) {
+  const r = probeStreams(file);
+  if (!r.ok) die('ffprobe failed: ' + r.stderr);
+  const data = r.data;
   const v = (data.streams || []).find((s) => s.codec_type === 'video') || {};
   const fmt = data.format || {};
   let fps = 0;
@@ -208,42 +247,312 @@ function appendCaptionsToScript(captionsPath) {
   return ",ass='" + ascii + "'";
 }
 
+// Build ffmpeg passes for a combined splice + crop+scale render. Used when
+// edit.json carries a `cuts` reference (tighten plan). For zero-cut plans
+// or no plan, the caller falls back to planCropArgs (single-chain).
+//
+// Two-pass design (works around an ffmpeg combined-encode bug that drops
+// trailing AAC frames when video EOFs slightly before audio):
+//
+//   Pass 1 (audio):  source.mp4 → audio splice graph → AAC mp4 temp
+//   Pass 2 (video):  source.mp4 + audio temp → video splice graph + mux
+//                    -c:v libx264 -c:a copy → final output
+//
+// If the source has no audio stream, only Pass 2 runs (with -map 0:a? to
+// gracefully pass through "no audio").
+//
+// Returns `passes[]` for the renderer to execute sequentially, plus
+// `tmpFiles[]` for cleanup on completion/failure.
+export function planSpliceArgs({ crop, source, output, startMs, endMs, captionsPath, quality, tightenPlan, hasAudio, deterministic }) {
+  const cropDecision = chooseRenderMode(crop);
+  const graph = buildSpliceGraph({
+    plan: tightenPlan,
+    cropFilterArg: cropDecision.filterArg,
+    captionsPath,
+    hasAudio,
+  });
+
+  const seekArgs = [];
+  if (typeof startMs === 'number') seekArgs.push('-ss', (startMs / 1000).toFixed(3));
+  if (typeof endMs   === 'number') seekArgs.push('-to', (endMs   / 1000).toFixed(3));
+
+  const passes = [];
+  const tmpFiles = [];
+
+  // ----- Pass 1: audio (only if source has audio) -----
+  let audioTmpPath = null;
+  if (hasAudio && graph.audioGraph) {
+    audioTmpPath = join(tmpdir(), 'cf-tighten-audio-' + process.pid + '-' + Date.now() + '.m4a');
+    tmpFiles.push(audioTmpPath);
+    const audioArgs = [
+      ...seekArgs, '-i', source,
+      '-filter_complex', graph.audioGraph,
+      '-map', graph.mapAudio,
+      '-c:a', 'aac', '-b:a', '192k',
+      audioTmpPath,
+    ];
+    passes.push({
+      label: 'audio',
+      args: audioArgs,
+      fallbackArgs: null,
+      encoder: 'libx264', // unused for audio-only; carried for log uniformity
+      fallbackEncoder: null,
+      filterComplex: graph.audioGraph,
+    });
+  }
+
+  // ----- Pass 2: video + mux (always runs) -----
+  const videoArgs = [...seekArgs, '-i', source];
+  if (audioTmpPath) videoArgs.push('-i', audioTmpPath);
+  videoArgs.push('-filter_complex', graph.videoGraph);
+  videoArgs.push('-map', graph.mapVideo);
+  if (audioTmpPath) {
+    videoArgs.push('-map', '1:a');
+  } else if (hasAudio) {
+    // Source has audio but we didn't pre-encode (shouldn't happen; defensive).
+    videoArgs.push('-map', '0:a?');
+  }
+  // (No -map for audio when source has none — output is video-only.)
+
+  const videoSuffix = [];
+  if (audioTmpPath) {
+    videoSuffix.push('-c:a', 'copy');
+  } else if (hasAudio) {
+    videoSuffix.push('-c:a', 'aac', '-b:a', '192k');
+  }
+  videoSuffix.push('-movflags', '+faststart');
+
+  const encoderOverride = deterministic ? 'cpu' : undefined;
+  if (deterministic) {
+    videoSuffix.push('-fflags', '+bitexact', '-tune', 'zerolatency',
+                    '-x264-params', 'sliced-threads=0:threads=1');
+  }
+  videoSuffix.push(output);
+
+  const videoFfmpegPlan = buildFfmpegPlan(videoArgs, videoSuffix, {
+    cpuPreset: deterministic ? 'medium' : (quality === 'fast' ? 'fast' : 'slow'),
+    cpuCrf:    quality === 'fast' ? 22 : 18,
+    encoder:   encoderOverride,
+  });
+  passes.push({
+    label: 'video+mux',
+    args: videoFfmpegPlan.args,
+    fallbackArgs: videoFfmpegPlan.fallbackArgs,
+    encoder: videoFfmpegPlan.encoder,
+    fallbackEncoder: videoFfmpegPlan.fallbackEncoder,
+    filterComplex: graph.videoGraph,
+  });
+
+  return {
+    passes,
+    tmpFiles,
+    mode: 'splice',
+    encoder: videoFfmpegPlan.encoder,
+    keyframeCount: cropDecision.keyframeCount,
+    byteSize: cropDecision.byteSize,
+    // Largest graph (video usually > audio) — used for the ADD-3 size warning.
+    filterComplex: graph.filterComplex,
+    junctionCount: graph.junctionCount,
+    keptCount: graph.keptCount,
+    padDurS: graph.padDurS,
+  };
+}
+
 async function render({ manifest }) {
   const m = JSON.parse(readFileSync(manifest, 'utf-8'));
-  const source = './uploads/' + manifest.split('/clips/')[1].split('/')[0] + '/source.mp4';
+  // Source path: explicit m.source wins, else infer from ./clips/<slug>/... convention.
+  let source = m.source;
+  if (!source) {
+    const segs = manifest.split('/clips/');
+    if (segs.length < 2) die('render: manifest path does not contain /clips/ and edit.json has no `source` field');
+    source = './uploads/' + segs[1].split('/')[0] + '/source.mp4';
+  }
   if (!existsSync(source)) die('source not found: ' + source);
+
+  // ADD-1: skill ordering validator. Tighten MUST run before broll, transitions,
+  // and music — renderer's video concat is hard-cut; cutting across baked
+  // overlays produces visible jump cuts. We block at render time rather than
+  // silently producing broken output.
+  if (m.cuts && (m.broll || m.transitions || m.music)) {
+    die('render: skill ordering violation — tighten plan present after broll/transitions bake. Re-run tighten before broll/transitions.');
+  }
+
+  // R1: load + assert tighten plan (if any), echo warnings.
+  let tightenPlan = null;
+  if (m.cuts) {
+    if (!existsSync(m.cuts)) die('render: cuts file not found: ' + m.cuts);
+    tightenPlan = JSON.parse(readFileSync(m.cuts, 'utf-8'));
+    try {
+      assertPlanInvariants(tightenPlan);
+    } catch (e) {
+      die(e.message);
+    }
+    for (const w of tightenPlan.warnings || []) {
+      process.stderr.write('render: tighten warning ' + w.code + ': ' + w.message + '\n');
+    }
+  }
 
   const crop = JSON.parse(readFileSync(m.crop_path, 'utf-8'));
   mkdirSync(dirname(m.output), { recursive: true });
 
   const captionsPath = m.captions && existsSync(m.captions) ? m.captions : null;
-  const plan = planCropArgs({
-    crop, source, output: m.output,
-    startMs: m.start_ms, endMs: m.end_ms,
-    captionsPath, quality: m.quality,
-  });
+  const deterministic = process.env.CF_RENDER_DETERMINISTIC === '1';
+  const useSplice = tightenPlan && (tightenPlan.kept_segments || []).length >= 1
+                                 && (tightenPlan.cuts || []).length >= 1;
 
-  process.stdout.write(JSON.stringify({
-    event: 'plan', mode: plan.mode, keyframes: plan.keyframeCount, expr_bytes: plan.byteSize,
-    encoder: plan.encoder,
-  }) + '\n');
+  let plan;
+  if (useSplice) {
+    plan = planSpliceArgs({
+      crop, source, output: m.output,
+      startMs: m.start_ms, endMs: m.end_ms,
+      captionsPath, quality: m.quality,
+      tightenPlan,
+      hasAudio: hasAudioStream(source),
+      deterministic,
+    });
+    // ADD-3: filter graph size guard (uses the larger of the two graphs).
+    if (plan.filterComplex.length > GRAPH_SIZE_WARN_BYTES) {
+      process.stderr.write('render: filter graph length ' + plan.filterComplex.length +
+        ' bytes, approaching ffmpeg default limit (~10KB). Consider --segment-batch if added.\n');
+    }
+    process.stdout.write(JSON.stringify({
+      event: 'plan', mode: 'splice',
+      kept: plan.keptCount, junctions: plan.junctionCount,
+      xfade_s: JUNCTION_XFADE_S, pad_dur_s: plan.padDurS,
+      filter_complex_bytes: plan.filterComplex.length,
+      passes: plan.passes.length,
+      encoder: plan.encoder, deterministic,
+    }) + '\n');
+  } else {
+    const cropPlan = planCropArgs({
+      crop, source, output: m.output,
+      startMs: m.start_ms, endMs: m.end_ms,
+      captionsPath, quality: m.quality,
+    });
+    plan = { passes: [{ label: 'crop', ...cropPlan }], tmpFiles: cropPlan.scriptFile ? [cropPlan.scriptFile] : [], mode: cropPlan.mode, encoder: cropPlan.encoder };
+    process.stdout.write(JSON.stringify({
+      event: 'plan', mode: cropPlan.mode, keyframes: cropPlan.keyframeCount, expr_bytes: cropPlan.byteSize,
+      encoder: cropPlan.encoder,
+    }) + '\n');
+  }
 
   let lastPct = -1;
+  const total = (m.end_ms - m.start_ms);
+  const passWalls = [];
   try {
-    await runFfmpegPlan(plan, {
-      onProgress: ({ out_ms }) => {
-        const total = (m.end_ms - m.start_ms);
-        const pct = Math.min(99, Math.floor((out_ms / total) * 100));
-        if (pct > lastPct) {
-          lastPct = pct;
-          process.stdout.write(JSON.stringify({ event: 'progress', pct }) + '\n');
-        }
-      },
+    for (const pass of plan.passes) {
+      lastPct = -1; // restart progress per pass
+      await runFfmpegPlan(pass, {
+        onProgress: ({ out_ms }) => {
+          const pct = Math.min(99, Math.floor((out_ms / total) * 100));
+          if (pct > lastPct) {
+            lastPct = pct;
+            process.stdout.write(JSON.stringify({ event: 'progress', pass: pass.label, pct }) + '\n');
+          }
+        },
+      });
+      passWalls.push({ name: pass.label, wall_ms: pass.wallMs || 0 });
+    }
+
+    // R6: zero-byte output guard.
+    if (!existsSync(m.output) || statSync(m.output).size === 0) {
+      try { unlinkSync(m.output); } catch {}
+      die('render: produced zero-byte output (no file left on disk)');
+    }
+
+    // ----- emit render_report.json -----
+    const reportPath = join(dirname(m.output), 'render_report.json');
+    const renderMode = useSplice ? 'splice' : 'passthrough';
+    const renderWarnings = [];
+    if (useSplice && plan.filterComplex.length > GRAPH_SIZE_WARN_BYTES) {
+      renderWarnings.push({
+        code: 'filter_graph_length_near_limit',
+        message: `filter graph ${plan.filterComplex.length} bytes, approaching ffmpeg ~10KB limit`,
+      });
+    }
+
+    let junctions = [];
+    let tightenSection = null;
+    if (useSplice && hasAudioStream(source)) {
+      const outPcmPath = join(tmpdir(), 'cf-out-pcm-' + process.pid + '-' + Date.now() + '.raw');
+      const srcPcmPath = join(tmpdir(), 'cf-src-pcm-' + process.pid + '-' + Date.now() + '.raw');
+      try {
+        extractMonoPcm({ source: m.output, output: outPcmPath });
+        extractMonoPcm({ source, output: srcPcmPath, startMs: m.start_ms, endMs: m.end_ms });
+        const outputPcm = readPcm(outPcmPath);
+        const sourcePcm = readPcm(srcPcmPath);
+        junctions = computeJunctionMetrics({
+          outputPcm, sourcePcm,
+          basisStartMs: tightenPlan.basis_start_ms,
+          keptSegments: tightenPlan.kept_segments,
+          xfadeS: JUNCTION_XFADE_S,
+        });
+      } finally {
+        try { unlinkSync(outPcmPath); } catch {}
+        try { unlinkSync(srcPcmPath); } catch {}
+      }
+    }
+    if (useSplice) {
+      tightenSection = {
+        plan_path: m.cuts,
+        kept_segments_count: tightenPlan.kept_segments.length,
+        cuts_count: tightenPlan.cuts.length,
+        saved_ms: tightenPlan.saved_ms,
+        warnings_from_plan: tightenPlan.warnings || [],
+      };
+    }
+
+    // Probe output durations for the report.
+    const probeAudio = spawnSync('ffprobe', ['-v','error','-select_streams','a','-show_entries','stream=duration','-of','csv=p=0', m.output], { encoding: 'utf-8' });
+    const probeVideo = spawnSync('ffprobe', ['-v','error','-select_streams','v','-show_entries','stream=duration','-of','csv=p=0', m.output], { encoding: 'utf-8' });
+    const audioDurMs = probeAudio.status === 0 && probeAudio.stdout.trim() ? Math.round(parseFloat(probeAudio.stdout.trim()) * 1000) : 0;
+    const videoDurMs = probeVideo.status === 0 && probeVideo.stdout.trim() ? Math.round(parseFloat(probeVideo.stdout.trim()) * 1000) : 0;
+
+    // Mode-aware AV drift warnings (ACTION 13/14).
+    const outDur  = videoDurMs || (useSplice ? tightenPlan.output_duration_ms : total);
+    const avDrift = outDur - audioDurMs;
+    if (renderMode === 'splice') {
+      if (avDrift < -50) {
+        renderWarnings.push({
+          code: 'av_drift_audio_overhang_excessive',
+          message: `audio is ${-avDrift} ms longer than video, exceeding 50 ms threshold. Splice math may be emitting tail silence beyond expected duration.`,
+        });
+      } else if (avDrift > 50) {
+        renderWarnings.push({
+          code: 'av_drift_video_longer_in_splice',
+          message: `video is ${avDrift} ms longer than audio in splice mode. Splice math may have dropped audio frames; investigate AAC encoder buffer flush.`,
+        });
+      }
+    } else {
+      if (Math.abs(avDrift) > 10) {
+        renderWarnings.push({
+          code: 'av_drift_unexpected_passthrough',
+          message: `passthrough render has ${avDrift} ms A/V drift, exceeding 10 ms tolerance. Possible muxer issue or input stream sync defect.`,
+        });
+      }
+    }
+
+    const report = buildRenderReport({
+      clipId: m.clip_id ?? null,
+      renderMode,
+      inputDurationMs: total,
+      outputDurationMs: outDur,
+      audioDurationMs: audioDurMs,
+      encoder: plan.encoder,
+      deterministic,
+      passes: passWalls,
+      filterComplexBytes: useSplice ? plan.filterComplex.length : 0,
+      junctionXfadeS: JUNCTION_XFADE_S,
+      tighten: tightenSection,
+      junctions,
+      warnings: renderWarnings,
     });
+    writeRenderReport(report, reportPath);
+
+    process.stdout.write(JSON.stringify({ event: 'done', path: m.output, report_path: reportPath }) + '\n');
   } finally {
-    if (plan.scriptFile) { try { unlinkSync(plan.scriptFile); } catch {} }
+    for (const f of (plan.tmpFiles || [])) { try { unlinkSync(f); } catch {} }
   }
-  process.stdout.write(JSON.stringify({ event: 'done', path: m.output }) + '\n');
 }
 
 // Stand-alone crop-animation renderer (no captions / b-roll / music). Useful
