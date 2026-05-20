@@ -53,14 +53,18 @@ jobs:
       - name: Syntax check bin/* shell scripts
         run: |
           set -e
-          for f in bin/cf-ytdlp bin/cf-whisper; do
+          for f in bin/cf-ytdlp; do
             sh -n "$f" && echo "ok $f"
           done
 
       - name: Syntax check Node CLIs (no .mjs ext but Node shebang)
         run: |
           set -e
-          for f in bin/cf-ffmpeg bin/cf-reframe bin/cf-caption-burn; do
+          for f in bin/cf-ffmpeg bin/cf-reframe bin/cf-caption-burn \
+                   bin/cf-whisper bin/cf-enhance bin/cf-tighten \
+                   bin/cf-clip bin/cf-voice-clone bin/cf-dub \
+                   bin/cf-brand-kit bin/cf-edit bin/cf-broll-ai \
+                   bin/cf-avatar; do
             node --check "$f" && echo "ok $f"
           done
 
