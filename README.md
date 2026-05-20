@@ -38,7 +38,7 @@ ClipForge is closing.
 | **Filler-word & pause removal**      | **✅**    | ✅       |
 | Speech enhance (loudnorm + denoise)  | ✅        | ✅       |
 | Brand vocabulary (custom dictionary) | ❌        | ✅       |
-| Prompt-based clipping                | ❌        | ✅       |
+| **Prompt-based clipping**            | **✅**    | ✅       |
 | Hook overlay + progress bar          | ❌        | ✅       |
 
 Pillar (a) Filler-word & pause removal landed as `/clip-forge:tighten` —
@@ -51,6 +51,14 @@ Pillar (b) Speech enhance landed as `/clip-forge:enhance` — CPU-first
 `dialoguenhance`, and two-pass `loudnorm` to -14 LUFS / -1.0 dBTP. It writes
 `enhanced.wav` plus `enhance_report.json`, then can patch `edit.json` with
 `audio_source` so render uses the cleaned WAV without touching the video.
+
+Pillar (c) Prompt-based clipping landed as `/clip-forge:clip --prompt
+"<topic>"` — clip-scout does a two-pass selection (filter to on-topic
+candidates, then re-rank the filtered set by virality desc). Zero matches
+return an "honest empty" `candidates: []` plus a structured `warning`
+block rather than silently falling back to virality-sort. See
+[skills/clip/SKILL.md](skills/clip/SKILL.md) and
+[agents/clip-scout.md](agents/clip-scout.md).
 
 **Known characteristics:**
 - PFLD inference is ~60 ms per face on CPU. A 30-minute source at 6 fps

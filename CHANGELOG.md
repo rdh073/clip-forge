@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [0.3.0] - 2026-05-20
 
+### Added — Pillar C prompt-based clipping ("ClipAnything")
+
+- `/clip-forge:clip --prompt "<topic>"` filters clip-scout candidates to
+  on-topic spans, then re-ranks the filtered set by virality desc. IDs
+  are reassigned `c01..` in the new sorted order.
+- `/clip-forge:start --prompt "<topic>"` plumbs the flag through to the
+  `Detect clips` step; under `--yolo` a zero-match aborts (does NOT
+  silently fall back to no-prompt).
+- New top-level `warning` block on `candidates.json` —
+  `{ "code": "...", "message": "..." }`. Currently emitted codes:
+  `"no_match"` (soft, prompt filtered everything; `fallback_used` stays
+  `false`) and `"no_scout_backend"` (hard, dispatcher misconfigured).
+  Schema is additive — v0.2.0 readers ignore the field.
+- `bin/cf-clip` dispatcher script — auditable routing from the slash
+  skill to either the real Agent backend (via `--emit-brief`) or a test
+  mock (via `CF_CLIP_SCOUT_MOCK=<path>` env var). Exits 0 on every
+  documented failure path; writes a valid `candidates.json` with
+  `fallback_used` / `warning` so downstream skills never crash on
+  missing artifacts.
+- `tests/mocks/clip-scout-mock.mjs` — deterministic stand-in that honors
+  the same I/O contract as `agents/clip-scout.md`. Reads brief on stdin,
+  emits STRICT JSON on stdout, byte-identical given the same brief.
+- `tests/fixtures/topic-transcript-60s.json` — committed 60 s
+  synthesized transcript with three contiguous topic blocks (fitness,
+  career, cooking) at ≈ 2 words/s. Deterministic mulberry32(20260520)
+  seeded by `tests/fixtures/build-fixtures.mjs`.
+- `tests/integration/clip-prompt.test.mjs` — 4 positive-evidence tests
+  covering: no-prompt baseline spans all three topics, on-topic filter
+  returns only matching candidates, zero-match honest empty, re-rank
+  invariant inside filtered set. Runs green in CI with no
+  `ANTHROPIC_API_KEY` set.
+
 ### Added — Pillar B audio enhance
 
 - `/clip-forge:enhance` skill + `bin/cf-enhance` audio cleanup pipeline.

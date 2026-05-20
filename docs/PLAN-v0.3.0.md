@@ -27,7 +27,8 @@ Two of those have now landed in the working tree:
 | Pillar | Skill / bin                        | Status                                       |
 |--------|------------------------------------|----------------------------------------------|
 | a      | `/clip-forge:tighten` · `bin/cf-tighten` · `bin/lib/tighten-splice.mjs` · `bin/lib/junction-analyzer.mjs` · `bin/lib/render-report.mjs` · `schemas/render_report.v1.json` | shipped at commit `e05d1ae` (2026-05-20) |
-| b      | `/clip-forge:enhance` · `bin/cf-enhance` · `tests/fixtures/noisy-speech-5s.mp4` · `tests/integration/enhance.test.mjs` · `tests/integration/enhance-render.test.mjs` | shipped in working tree, **commit pending**  |
+| b      | `/clip-forge:enhance` · `bin/cf-enhance` · `tests/fixtures/noisy-speech-5s.mp4` · `tests/integration/enhance.test.mjs` · `tests/integration/enhance-render.test.mjs` | shipped at commit `eb7dd47` (2026-05-20)  |
+| c      | `/clip-forge:clip --prompt` · `bin/cf-clip` · `agents/clip-scout.md` (Prompt-based filtering section) · `tests/mocks/clip-scout-mock.mjs` · `tests/fixtures/topic-transcript-60s.json` · `tests/integration/clip-prompt.test.mjs` | shipped at commit (rebased — set below) (2026-05-20) |
 
 That leaves three picks for the v0.3.0 minor: **c, e, i**. The deferral
 table in §2 is unchanged.
@@ -57,7 +58,7 @@ Legend — Complexity: S=≤300 LOC ≤2d · M=≤700 LOC ≤5d · L=≤1500 LOC
 |---|-------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------|------------|------|-----------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------|---------|
 | a | ✅ Filler-word & silence removal                            | Landed `e05d1ae`. `/clip-forge:tighten` writes `tighten_plan.json`; `cf-ffmpeg render` two-pass splices with 8 ms `acrossfade`; G1/G2/G3 junction telemetry in `render_report.json`. Locales `en` + `id` v2 (always-cut + context-only). | —                                                                                                | M          | ~810 (shipped) | ffmpeg `silencedetect`, `aselect`/`select`, `concat`, `acrossfade`, `apad`, two-pass renderer.            | Shipped. Watch items in `docs/ROADMAP.md` v0.3.1: high-N video frame-grid drift, filter-graph length warnings.                                | v0.3.0  |
 | b | ✅ Speech enhance / denoise / loudness norm                 | Landed in working tree (commit pending, base `e05d1ae`). `/clip-forge:enhance` + `bin/cf-enhance`: `afftdn` → optional `arnndn` (pinned `cb.rnnn`) → adaptive `agate` → `dialoguenhance` → two-pass `loudnorm=I=-14:TP=-1.0:LRA=11`. Optional Demucs pre-pass. `enhanced.wav` + `enhance_report.json`; `edit.json.audio_source` patches render handoff. | —                                                                                                | S          | ~470 (shipped) | ffmpeg `loudnorm`, `afftdn`, `agate`, `dialoguenhance`; optional `arnndn` + pinned `cb.rnnn`; optional Demucs. | Shipped. Watch items: ensure final commit message + version bump + README link to skill ship together; CI fixture `noisy-speech-5s.mp4` is gitignored-safe. | v0.3.0  |
-| c | Prompt-based clipping ("ClipAnything")                      | `clip-scout` picks generically by virality score; no topical steering.                                              | `--prompt <topic>` flag → scout filters/biases candidates to the topic.                          | S          | ~220 | None new — pure agent-prompt extension + skill arg threading.                                              | Agent may over-filter and return 0 candidates. Mitigation: two-pass — filter to prompt-matched, re-rank by virality within the filtered set; honest empty when zero match. | v0.3.0  |
+| c | ✅ Prompt-based clipping ("ClipAnything")                   | Landed at commit (set after rebase). `/clip-forge:clip --prompt "<topic>"` + `bin/cf-clip` dispatcher + agent two-pass filter+re-rank. Zero-match returns `candidates:[]` + `warning.code:"no_match"` (honest empty, `fallback_used` stays `false`). | —                                                                                                | S          | ~270 (shipped) | None new — agent-prompt extension + `bin/cf-clip` dispatcher + `tests/mocks/clip-scout-mock.mjs` for CI.   | Shipped. Watch items: real-Agent dispatch path lives in the slash-skill markdown (cf-clip handles `--emit-brief` for production handoff); `no_scout_backend` fallback degrades gracefully when neither mock nor emit-brief is wired. | v0.3.0  |
 | d | Manual reframe / subject pin override                       | `--speaker-map` only (per-speaker static region). No per-time override.                                              | `pin_overrides.json` co-input: `[{t_start_ms,t_end_ms,cx,cy,radius?}, …]`, scorer respects it.   | M          | ~500 | None new — cf-reframe additive flag + active-speaker.mjs override hook.                                   | Schema sprawl on crop_path. Mitigation: keep override file separate; render reads only crop_path.                                              | v0.4.0  |
 | e | Brand vocabulary (custom transcription dictionary)          | None. Proper nouns mangled.                                                                                          | `~/.clip-forge/vocab.json`; Deepgram `keywords`, Whisper `--initial-prompt`, vocab-aware caption post-fixup. | S          | ~260 | Deepgram MCP `keywords` param; whisper.cpp `--prompt`; small case-restoring post-pass in `cf-whisper`.    | Whisper bias from initial-prompt is fuzzy and can hallucinate brand names into silence. Mitigation: cap prompt at 240 tokens; regression test on silent fixture; document caveat. | v0.3.0  |
 | f | Intro / outro stinger templates                             | `templates/intros/` is empty; `edit.json` carries `intro` / `outro` fields but renderer doesn't honor them yet.       | Ship 2–3 Remotion-rendered stinger MP4s + `cf-ffmpeg concat` step.                              | M          | ~600 | Remotion CLI (already a soft dep via thumbnails comp), node 20+, ffmpeg `concat` demuxer.                 | Remotion install footprint is large; keep CLI invocation optional, pre-render assets and ship as binary artifacts. Low leverage — most viral creators skip stingers. | v0.5.0  |
@@ -483,12 +484,11 @@ the remaining v0.3.0 slices land:
 - 2026-05-20 — added §8 Cross-cutting concerns (caption re-timeline TODO,
   skill ordering enforcement, deterministic-render env var) once the
   pillar-(a) splice integration landed.
-- 2026-05-20 — Pillar B (`/clip-forge:enhance`) landed in the working tree;
-  final commit SHA pending (current base `e05d1ae`). Deviations from the
-  draft: implementation uses `audio_source` instead of `audio_enhanced`;
-  `bin/cf-enhance` replaced the planned `bin/cf-audio`; the production
-  chain adds `dialoguenhance`, adaptive `agate`, and optional Demucs
-  voice isolation, none of which were in the original plan.
+- 2026-05-20 — Pillar B (`/clip-forge:enhance`) landed at commit `eb7dd47`.
+  Deviations from the draft: implementation uses `audio_source` instead of
+  `audio_enhanced`; `bin/cf-enhance` replaced the planned `bin/cf-audio`;
+  the production chain adds `dialoguenhance`, adaptive `agate`, and
+  optional Demucs voice isolation, none of which were in the original plan.
 - 2026-05-20 — Revision 2: collapsed shipped pillars (a) and (b) into ✅
   rows in the gap table; narrowed §3 schema, §4 tests, §6 LOC budget to
   the three remaining picks (c, e, i). Bundled VTT/SRT sidecar export and
@@ -496,3 +496,12 @@ the remaining v0.3.0 slices land:
   same renderer + caption code paths. Added §8 telemetry-schema extension
   and vocab.json + tighten interaction notes. Five open questions queued
   for maintainer review at §7.
+- 2026-05-20 — Pillar (c) Prompt-based clipping shipped:
+  `/clip-forge:clip --prompt "<topic>"` + `bin/cf-clip` dispatcher +
+  `tests/mocks/clip-scout-mock.mjs` + `tests/integration/clip-prompt.test.mjs`.
+  Zero-match contract resolved per §5 risk row 1 — chose "honest empty"
+  (`candidates:[]` + `warning.code:"no_match"`, `fallback_used` stays
+  `false`) over silent virality-sort fallback. Caller surfaces the
+  warning verbatim; `--yolo` aborts rather than broadening. Implemented
+  by subagent against base `eb7dd47`; rebased onto master to land alongside
+  pillar B.

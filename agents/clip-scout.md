@@ -52,6 +52,33 @@ Round virality to an integer.
 - Mid-thought ("…and that's why we did it.")
 - Pure backstory ("So I was born in…")
 
+## Prompt-based filtering
+
+When the caller's brief contains a `Prompt: <topic>` line (passed via
+`/clip-forge:clip --prompt "<topic>"`), do a **two-pass selection**:
+
+1. **Filter.** Include only candidates whose transcript text is on-topic
+   for the prompt. Use the full sentence span, not just the hook line —
+   a clip about "career advice" might open with a pattern-interrupt
+   ("Nobody tells you this") and only land on the topic in the middle.
+   Reject candidates that don't carry the topic.
+2. **Re-rank.** Sort the filtered set by `virality` descending, exactly
+   the same scoring you'd use without a prompt. Reassign IDs `c01..` in
+   the new sorted order. The prompt filter does NOT change scoring
+   weights — only membership.
+
+If no candidates match, return EXACTLY:
+
+```json
+{"candidates": [], "warning": {"code":"no_match","message":"no candidates matched prompt — re-run without --prompt or broaden the topic"}}
+```
+
+Do NOT fall back to virality-sorted top-N on zero matches. "Honest empty"
+is the contract — the caller surfaces the warning verbatim. All other
+contracts (STRICT JSON, boundary discipline, duration window, no-overlap,
+sort by virality desc, IDs `c01..`) remain in force inside the filtered
+set.
+
 ## Output schema
 
 Return EXACTLY this shape (no extra keys, no missing keys):

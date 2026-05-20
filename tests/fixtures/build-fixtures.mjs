@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 // build-fixtures.mjs — generates the RGB fixture files used by
-// bin/lib/face-detector.test.mjs. The fixture frames need to be real images
-// (MediaPipe can't detect a synthetic gradient as a face), so this script
-// expects you to drop a PNG into tests/fixtures/ first.
+// bin/lib/face-detector.test.mjs AND the topic-segmented transcript fixture
+// used by tests/integration/clip-prompt.test.mjs.
 //
 // Workflow:
 //   1. Place tests/fixtures/single-face.png (any photo with a clearly visible
@@ -11,6 +10,11 @@
 //   2. Run `npm run build-fixtures`. The script extracts a 320x240 rgb24
 //      frame from each PNG and writes the .rgb sibling files + a dims.json
 //      that records the canonical width/height.
+//   3. The same run also regenerates tests/fixtures/topic-transcript-60s.json,
+//      a deterministic 60 s word-timed transcript with three topic blocks
+//      (fitness 0–20s, career 20–40s, cooking 40–60s). Output is committed —
+//      the build is reproducible (mulberry32 seeded) so re-running yields a
+//      byte-identical file.
 //
 // Why not ship the .rgb files directly? They're large (~230 KB each) and
 // the source PNGs are tiny in comparison. Keeping the conversion deterministic
@@ -63,5 +67,115 @@ for (const { png, rgb } of ITEMS) {
 
 writeFileSync(resolve(DIR, 'dims.json'),
   JSON.stringify({ width: WIDTH, height: HEIGHT }, null, 2) + '\n');
+
+// ----- topic-segmented transcript fixture (pillar c — prompt-based clipping) -----
+//
+// Three contiguous 20 s blocks, ≈ 2 words/s, sentence boundaries aligned to
+// fixed mid-block beats. Determinism comes from a mulberry32 seed (matches
+// the stress-plan-n50.json fixture's pattern); shuffling sentence order is
+// avoided so re-runs produce byte-identical output.
+
+function mulberry32(seed) {
+  let s = seed >>> 0;
+  return function () {
+    s = (s + 0x6D2B79F5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const TOPIC_BLOCKS = [
+  {
+    topic: 'fitness',
+    start_s: 0,
+    end_s: 20,
+    sentences: [
+      'I hit the gym every morning and squat heavy on leg day.',
+      'My protein intake is two hundred grams to support muscle growth.',
+      'Cardio after lifting burns extra fat without sacrificing strength.',
+      'A good fitness program tracks reps and rest between every set.',
+      'You will see real progress in the gym after eight consistent weeks.',
+      'Form on the squat matters more than the weight on the bar.',
+    ],
+  },
+  {
+    topic: 'career',
+    start_s: 20,
+    end_s: 40,
+    sentences: [
+      'I decided to quit my job after the third missed promotion this year.',
+      'A raise of fifteen percent rarely closes a real salary gap.',
+      'Negotiate your job offer before you accept the company paperwork.',
+      'My career took off the day I stopped chasing the next promotion.',
+      'You should know your salary band before you start the conversation.',
+      'Quit the job that drains you and the right career will find you.',
+    ],
+  },
+  {
+    topic: 'cooking',
+    start_s: 40,
+    end_s: 60,
+    sentences: [
+      'I sweat the onion in the pan before adding any garlic to the recipe.',
+      'A sharp knife is the single most important tool in the home cook kitchen.',
+      'Toast the spices in the dry pan to wake up the sauce flavor.',
+      'My favorite recipe finishes the sauce with a knob of cold butter.',
+      'Cook the onion low and slow until it turns translucent and sweet.',
+      'Wipe the knife on a clean cloth between every cutting board pass.',
+    ],
+  },
+];
+
+function buildTopicTranscript(seed) {
+  const rng = mulberry32(seed);
+  const words = [];
+  for (const block of TOPIC_BLOCKS) {
+    const blockDurMs = (block.end_s - block.start_s) * 1000;
+    const sentCount = block.sentences.length;
+    const slotMs = blockDurMs / sentCount;
+    for (let si = 0; si < sentCount; si++) {
+      const sentence = block.sentences[si];
+      const sentStartMs = block.start_s * 1000 + si * slotMs;
+      const tokens = sentence.split(/\s+/);
+      // Reserve ≈ 90 ms gap at end of sentence for natural pause.
+      const usableMs = slotMs - 90;
+      const perWord = usableMs / tokens.length;
+      let cursor = sentStartMs;
+      for (let wi = 0; wi < tokens.length; wi++) {
+        const jitter = (rng() - 0.5) * 12;
+        const dur = Math.max(80, perWord + jitter);
+        const startMs = Math.round(cursor);
+        const endMs = Math.round(cursor + dur);
+        words.push({
+          w: tokens[wi],
+          start_ms: startMs,
+          end_ms: endMs,
+          confidence: 0.95,
+          speaker: 'S0',
+          topic: block.topic,
+        });
+        cursor += dur;
+      }
+    }
+  }
+  return {
+    version: 1,
+    engine: 'synthetic-topic-blocks',
+    language: 'en',
+    duration_s: 60.0,
+    source_audio: null,
+    alignment_method: 'deterministic mulberry32(20260520) jitter on uniform per-word slots within fixed sentence beats',
+    topic_blocks: TOPIC_BLOCKS.map((b) => ({ topic: b.topic, start_s: b.start_s, end_s: b.end_s })),
+    words,
+  };
+}
+
+const TOPIC_OUT = resolve(DIR, 'topic-transcript-60s.json');
+const topicData = buildTopicTranscript(20260520);
+writeFileSync(TOPIC_OUT, JSON.stringify(topicData, null, 2) + '\n');
+process.stdout.write('  ✅ ' + TOPIC_OUT + ' (' + topicData.words.length + ' words across '
+  + topicData.topic_blocks.length + ' topic blocks)\n');
 
 process.exit(allOk ? 0 : 1);

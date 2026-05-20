@@ -1,0 +1,289 @@
+#!/usr/bin/env node
+// cf-clip — dispatch script for /clip-forge:clip. Loads transcript + profile,
+// builds the clip-scout brief, routes the brief through one of two
+// scout backends, validates the response, and writes
+// ./clips/<slug>/candidates.json. Pure orchestration — never picks clips
+// itself.
+//
+// Backends (selected at runtime):
+//   1. CF_CLIP_SCOUT_MOCK=<path> set     → exec the script at <path>, write
+//                                          the brief to its stdin, read STRICT
+//                                          JSON back from its stdout. Used by
+//                                          tests/integration/clip-prompt.test.mjs
+//                                          to exercise the contract without
+//                                          spending ANTHROPIC_API_KEY budget.
+//   2. (no env, no --emit-brief)         → exit 0 after dumping the brief to
+//                                          stdout. The slash-skill (which holds
+//                                          the Agent tool) reads that brief
+//                                          and continues. cf-clip never spawns
+//                                          the real Agent itself; the skill's
+//                                          markdown does, in-host.
+//
+// In every documented failure mode cf-clip exits 0 and writes a valid
+// candidates.json with either candidates:[] + a warning{code,message} (soft
+// — "no_match", scout returned empty filter) OR with fallback_used:true and
+// a fallback_reason (hard — mock binary missing, scout JSON unparseable,
+// transcript unreadable). Downstream skills must NOT crash on either shape.
+//
+// Schema: see skills/clip/SKILL.md "Output schema". The warning block is
+// additive — v0.2.0 readers ignore it. Idempotent: same inputs + same
+// --prompt → byte-identical candidates.json (sort by virality desc, IDs
+// re-assigned c01..; mocks must be deterministic too).
+
+import { spawnSync } from 'node:child_process';
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { dirname, resolve as resolvePath, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = dirname(__filename);
+const PLUGIN_ROOT = resolvePath(__dirname, '..');
+
+const DEFAULTS = {
+  count: 15,
+  minDurationS: 15,
+  maxDurationS: 90,
+};
+
+function die(msg, code = 1) {
+  process.stderr.write('cf-clip: ' + msg + '\n');
+  process.exit(code);
+}
+
+function parseArgs(argv) {
+  const out = {
+    slug: null,
+    transcript: null,
+    profile: null,
+    output: null,
+    prompt: null,
+    emitBrief: false,
+    count: DEFAULTS.count,
+    minDurationS: DEFAULTS.minDurationS,
+    maxDurationS: DEFAULTS.maxDurationS,
+  };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--help' || a === '-h') { printHelp(); process.exit(0); }
+    else if (a === '--slug')          out.slug = argv[++i];
+    else if (a === '--transcript')    out.transcript = argv[++i];
+    else if (a === '--profile')       out.profile = argv[++i];
+    else if (a === '--output' || a === '--out') out.output = argv[++i];
+    else if (a === '--prompt')        out.prompt = argv[++i];
+    else if (a === '--count')         out.count = parseInt(argv[++i], 10);
+    else if (a === '--min-duration')  out.minDurationS = parseInt(argv[++i], 10);
+    else if (a === '--max-duration')  out.maxDurationS = parseInt(argv[++i], 10);
+    else if (a === '--emit-brief')    out.emitBrief = true;
+    else die('unknown flag: ' + a);
+  }
+  if (!out.transcript) die('--transcript <path> required');
+  if (!out.output && !out.emitBrief) die('--output <path> required (unless --emit-brief)');
+  return out;
+}
+
+function printHelp() {
+  process.stdout.write(`cf-clip — dispatch /clip-forge:clip via mock or emit brief
+
+usage:
+  cf-clip --transcript <p> --output <p> [--profile <p>] [--prompt "<topic>"]
+          [--slug <s>] [--count N] [--min-duration S] [--max-duration S]
+          [--emit-brief]
+
+inputs:
+  --transcript <p>     word-timed transcript.json (required)
+  --profile <p>        creator profile.json (optional; embedded in brief if present)
+  --slug <s>           project slug; decorative — written into candidates.json
+
+filters:
+  --prompt "<topic>"   restrict candidates to ones whose transcript is on-topic
+  --count N            cap on returned candidates (default 15)
+  --min-duration S     min clip duration in seconds (default 15)
+  --max-duration S     max clip duration in seconds (default 90)
+
+modes:
+  --output <p>         candidates.json target path
+  --emit-brief         print the brief to stdout and exit 0 (do not invoke any scout)
+
+env:
+  CF_CLIP_SCOUT_MOCK   path to a script that consumes the brief on stdin and
+                       emits STRICT JSON on stdout. When set, cf-clip routes
+                       the brief through this mock instead of leaving scouting
+                       to the host slash-skill. Used by integration tests.
+`);
+}
+
+function loadJson(path, label) {
+  if (!existsSync(path)) return { ok: false, reason: label + '_missing', err: `not found: ${path}` };
+  try {
+    return { ok: true, data: JSON.parse(readFileSync(path, 'utf-8')) };
+  } catch (e) {
+    return { ok: false, reason: label + '_unreadable', err: e.message };
+  }
+}
+
+function buildBrief(opts, transcript, profile) {
+  const lines = [];
+  lines.push('You are clip-scout. Given the transcript below and the profile, return STRICT JSON only — no prose, no markdown — matching the schema in the system message.');
+  lines.push('');
+  lines.push('Hard rules:');
+  lines.push(`- Pick at most ${opts.count} candidates.`);
+  lines.push('- Each clip must be a contiguous span from the transcript.');
+  lines.push(`- Duration: ${opts.minDurationS}s ≤ end_ms − start_ms ≤ ${opts.maxDurationS}s.`);
+  lines.push('- Score on five axes (0-100 each), virality = weighted mean (see system message).');
+  lines.push('- Reject clips that start or end mid-sentence; align to sentence boundaries.');
+  if (opts.prompt) {
+    lines.push('');
+    lines.push('Prompt-based filtering:');
+    lines.push(`- Restrict candidates to spans whose transcript text is on-topic for: "${opts.prompt}".`);
+    lines.push('- Two-pass selection: first filter to on-topic candidates, then re-rank the filtered set by virality desc.');
+    lines.push('- Zero matches → return {"candidates": [], "warning": {"code":"no_match","message":"no candidates matched prompt — re-run without --prompt or broaden the topic"}}.');
+  }
+  lines.push('');
+  if (opts.prompt) lines.push(`Prompt: ${opts.prompt}`);
+  if (profile) lines.push('Profile: ' + JSON.stringify(profile));
+  lines.push('Transcript: ' + JSON.stringify(transcript));
+  return lines.join('\n');
+}
+
+function callMockBackend(mockPath, brief) {
+  if (!existsSync(mockPath)) {
+    return { ok: false, reason: 'mock_missing', err: `CF_CLIP_SCOUT_MOCK not found: ${mockPath}` };
+  }
+  const r = spawnSync(process.execPath, [mockPath], {
+    input: brief,
+    encoding: 'utf-8',
+    env: { ...process.env },
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  if (r.status !== 0) {
+    return { ok: false, reason: 'mock_exit_nonzero', err: `mock exit ${r.status}: ${r.stderr || ''}` };
+  }
+  const trimmed = (r.stdout || '').trim();
+  if (!trimmed) {
+    return { ok: false, reason: 'mock_empty_output', err: 'mock produced no stdout' };
+  }
+  try {
+    return { ok: true, data: JSON.parse(trimmed) };
+  } catch (e) {
+    return { ok: false, reason: 'mock_invalid_json', err: e.message + ' :: ' + trimmed.slice(0, 240) };
+  }
+}
+
+function reRankByVirality(cands) {
+  // Sort by virality desc, reassign IDs c01.., stable on tie by start_ms.
+  const sorted = [...cands].sort((a, b) => {
+    if (b.virality !== a.virality) return b.virality - a.virality;
+    return (a.start_ms ?? 0) - (b.start_ms ?? 0);
+  });
+  return sorted.map((c, i) => ({ ...c, id: 'c' + String(i + 1).padStart(2, '0') }));
+}
+
+// Stable JSON serializer — keys sorted at every level. Guarantees byte-identical
+// output across runs given identical inputs.
+function stableStringify(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    return '[' + value.map(stableStringify).join(',') + ']';
+  }
+  const keys = Object.keys(value).sort();
+  return '{' + keys.map((k) => JSON.stringify(k) + ':' + stableStringify(value[k])).join(',') + '}';
+}
+
+function pretty(obj) {
+  // Pretty-print using JSON.stringify with 2-space indent, but feed through
+  // stableStringify-derived order via a serialize-then-reparse pipe. Cheap and
+  // produces a stable byte representation idempotent across runs.
+  return JSON.stringify(JSON.parse(stableStringify(obj)), null, 2) + '\n';
+}
+
+function writeOutput(opts, payload) {
+  mkdirSync(dirname(opts.output), { recursive: true });
+  writeFileSync(opts.output, pretty(payload));
+}
+
+function main() {
+  const opts = parseArgs(process.argv.slice(2));
+  const txLoad = loadJson(opts.transcript, 'transcript');
+  if (!txLoad.ok) {
+    const payload = {
+      version: 1,
+      slug: opts.slug,
+      generated_at: null,
+      candidates: [],
+      fallback_used: true,
+      fallback_reason: txLoad.err,
+      warning: { code: txLoad.reason, message: txLoad.err },
+    };
+    if (opts.output) writeOutput(opts, payload);
+    process.stdout.write(stableStringify(payload) + '\n');
+    process.exit(0);
+  }
+  let profile = null;
+  if (opts.profile) {
+    const pLoad = loadJson(opts.profile, 'profile');
+    if (pLoad.ok) profile = pLoad.data;
+  }
+
+  const brief = buildBrief(opts, txLoad.data, profile);
+  if (opts.emitBrief) {
+    process.stdout.write(brief + '\n');
+    process.exit(0);
+  }
+
+  const mockPath = process.env.CF_CLIP_SCOUT_MOCK || '';
+  if (!mockPath) {
+    // No mock + no --emit-brief: write a fallback artifact rather than crash.
+    // Real Agent dispatch happens inside the slash-skill markdown, not here.
+    const payload = {
+      version: 1,
+      slug: opts.slug,
+      generated_at: null,
+      candidates: [],
+      fallback_used: true,
+      fallback_reason: 'no_scout_backend',
+      warning: {
+        code: 'no_scout_backend',
+        message: 'cf-clip called with no CF_CLIP_SCOUT_MOCK and no --emit-brief — the slash-skill is responsible for invoking the real Agent tool',
+      },
+    };
+    writeOutput(opts, payload);
+    process.exit(0);
+  }
+
+  const scout = callMockBackend(mockPath, brief);
+  if (!scout.ok) {
+    const payload = {
+      version: 1,
+      slug: opts.slug,
+      generated_at: null,
+      candidates: [],
+      fallback_used: true,
+      fallback_reason: scout.err,
+      warning: { code: scout.reason, message: scout.err },
+    };
+    writeOutput(opts, payload);
+    process.exit(0);
+  }
+
+  const rawCandidates = Array.isArray(scout.data.candidates) ? scout.data.candidates : [];
+  const ranked = reRankByVirality(rawCandidates);
+  const payload = {
+    version: 1,
+    slug: opts.slug,
+    generated_at: null,
+    candidates: ranked,
+    fallback_used: false,
+    fallback_reason: null,
+  };
+  if (scout.data.warning && typeof scout.data.warning === 'object'
+      && scout.data.warning.code && scout.data.warning.message) {
+    payload.warning = {
+      code: String(scout.data.warning.code),
+      message: String(scout.data.warning.message),
+    };
+  }
+  writeOutput(opts, payload);
+  process.exit(0);
+}
+
+main();

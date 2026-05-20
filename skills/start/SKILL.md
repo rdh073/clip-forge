@@ -21,8 +21,9 @@ Parse `$ARGUMENTS` for flags before doing anything else:
 | `--clips <n>`  | Override target clip count (default: pull from profile, fallback 10).         |
 | `--style <n>`  | Override caption style for this run only.                                     |
 | `--platforms <list>` | Comma-separated subset of platforms (e.g. `tiktok,shorts`).            |
+| `--prompt "<topic>"` | Topical filter passed straight through to `/clip-forge:clip`.          |
 
-Set internal vars `YOLO`, `SOURCE`, `CLIP_COUNT`, `STYLE_OVERRIDE`, `PLATFORMS`.
+Set internal vars `YOLO`, `SOURCE`, `CLIP_COUNT`, `STYLE_OVERRIDE`, `PLATFORMS`, `PROMPT`.
 
 ## Pipeline
 
@@ -87,11 +88,12 @@ and prints `⚠ using offline transcription (slower)`.
 ### Step 4 — Detect clips
 
 ```text
-/clip-forge:clip $SLUG --count $CLIP_COUNT
+/clip-forge:clip $SLUG --count $CLIP_COUNT ${PROMPT:+--prompt "$PROMPT"}
 ```
 
 Reads transcript, writes `./clips/$SLUG/candidates.json` (up to 15 candidates
-sorted by virality). Render the result as a compact table:
+sorted by virality, optionally filtered by `--prompt`). Render the result as
+a compact table:
 
 ```
 #   start    end      virality  title
@@ -99,7 +101,34 @@ sorted by virality). Render the result as a compact table:
 2   00:11:01 00:11:47   88      "nobody tells you this about X"
 ```
 
-If **not** `--yolo`, ask:
+#### Step-4 short-circuit on `warning.code === "no_match"`
+
+Before showing the table, inspect `candidates.json` for a top-level
+`"warning"` block. If `warning.code === "no_match"` (the prompt filter
+returned zero candidates), surface the warning verbatim:
+
+```
+⚠ no candidates matched prompt — re-run without --prompt or broaden the topic
+```
+
+Then:
+
+- If **not** `--yolo`, ask:
+  ```
+  AskUserQuestion: "No clips matched. What now?"
+    options:
+      - Re-run without --prompt (broadest set)
+      - Re-run with a different prompt
+      - Abort
+  ```
+- If `--yolo`, abort with the warning surfaced — never silently fall
+  back to the no-prompt set under `--yolo`. The user's intent was the
+  prompt; honor it.
+
+Other `warning.code` values (e.g. `no_scout_backend`) are HARD fallbacks —
+surface the message and abort the pipeline regardless of `--yolo`.
+
+If candidates are present, continue: if **not** `--yolo`, ask:
 ```
 AskUserQuestion: "Which clips do you want to ship?"
   options:

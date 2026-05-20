@@ -1,0 +1,1739 @@
+{
+  "version": 1,
+  "engine": "synthetic-topic-blocks",
+  "language": "en",
+  "duration_s": 60,
+  "source_audio": null,
+  "alignment_method": "deterministic mulberry32(20260520) jitter on uniform per-word slots within fixed sentence beats",
+  "topic_blocks": [
+    {
+      "topic": "fitness",
+      "start_s": 0,
+      "end_s": 20
+    },
+    {
+      "topic": "career",
+      "start_s": 20,
+      "end_s": 40
+    },
+    {
+      "topic": "cooking",
+      "start_s": 40,
+      "end_s": 60
+    }
+  ],
+  "words": [
+    {
+      "w": "I",
+      "start_ms": 0,
+      "end_ms": 265,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "hit",
+      "start_ms": 265,
+      "end_ms": 540,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "the",
+      "start_ms": 540,
+      "end_ms": 813,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "gym",
+      "start_ms": 813,
+      "end_ms": 1085,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "every",
+      "start_ms": 1085,
+      "end_ms": 1354,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "morning",
+      "start_ms": 1354,
+      "end_ms": 1619,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "and",
+      "start_ms": 1619,
+      "end_ms": 1891,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "squat",
+      "start_ms": 1891,
+      "end_ms": 2163,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "heavy",
+      "start_ms": 2163,
+      "end_ms": 2435,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "on",
+      "start_ms": 2435,
+      "end_ms": 2700,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "leg",
+      "start_ms": 2700,
+      "end_ms": 2966,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "day.",
+      "start_ms": 2966,
+      "end_ms": 3236,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "My",
+      "start_ms": 3333,
+      "end_ms": 3627,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "protein",
+      "start_ms": 3627,
+      "end_ms": 3919,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "intake",
+      "start_ms": 3919,
+      "end_ms": 4216,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "is",
+      "start_ms": 4216,
+      "end_ms": 4516,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "two",
+      "start_ms": 4516,
+      "end_ms": 4812,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "hundred",
+      "start_ms": 4812,
+      "end_ms": 5111,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "grams",
+      "start_ms": 5111,
+      "end_ms": 5405,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "to",
+      "start_ms": 5405,
+      "end_ms": 5698,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "support",
+      "start_ms": 5698,
+      "end_ms": 5999,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "muscle",
+      "start_ms": 5999,
+      "end_ms": 6298,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "growth.",
+      "start_ms": 6298,
+      "end_ms": 6590,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "Cardio",
+      "start_ms": 6667,
+      "end_ms": 7030,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "after",
+      "start_ms": 7030,
+      "end_ms": 7385,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "lifting",
+      "start_ms": 7385,
+      "end_ms": 7744,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "burns",
+      "start_ms": 7744,
+      "end_ms": 8107,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "extra",
+      "start_ms": 8107,
+      "end_ms": 8467,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "fat",
+      "start_ms": 8467,
+      "end_ms": 8829,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "without",
+      "start_ms": 8829,
+      "end_ms": 9184,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "sacrificing",
+      "start_ms": 9184,
+      "end_ms": 9542,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "strength.",
+      "start_ms": 9542,
+      "end_ms": 9897,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "A",
+      "start_ms": 10000,
+      "end_ms": 10291,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "good",
+      "start_ms": 10291,
+      "end_ms": 10582,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "fitness",
+      "start_ms": 10582,
+      "end_ms": 10877,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "program",
+      "start_ms": 10877,
+      "end_ms": 11169,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "tracks",
+      "start_ms": 11169,
+      "end_ms": 11463,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "reps",
+      "start_ms": 11463,
+      "end_ms": 11755,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "and",
+      "start_ms": 11755,
+      "end_ms": 12055,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "rest",
+      "start_ms": 12055,
+      "end_ms": 12345,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "between",
+      "start_ms": 12345,
+      "end_ms": 12637,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "every",
+      "start_ms": 12637,
+      "end_ms": 12929,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "set.",
+      "start_ms": 12929,
+      "end_ms": 13222,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "You",
+      "start_ms": 13333,
+      "end_ms": 13605,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "will",
+      "start_ms": 13605,
+      "end_ms": 13881,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "see",
+      "start_ms": 13881,
+      "end_ms": 14146,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "real",
+      "start_ms": 14146,
+      "end_ms": 14415,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "progress",
+      "start_ms": 14415,
+      "end_ms": 14683,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "in",
+      "start_ms": 14683,
+      "end_ms": 14953,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "the",
+      "start_ms": 14953,
+      "end_ms": 15224,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "gym",
+      "start_ms": 15224,
+      "end_ms": 15493,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "after",
+      "start_ms": 15493,
+      "end_ms": 15763,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "eight",
+      "start_ms": 15763,
+      "end_ms": 16036,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "consistent",
+      "start_ms": 16036,
+      "end_ms": 16312,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "weeks.",
+      "start_ms": 16312,
+      "end_ms": 16581,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "Form",
+      "start_ms": 16667,
+      "end_ms": 16941,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "on",
+      "start_ms": 16941,
+      "end_ms": 17208,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "the",
+      "start_ms": 17208,
+      "end_ms": 17473,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "squat",
+      "start_ms": 17473,
+      "end_ms": 17748,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "matters",
+      "start_ms": 17748,
+      "end_ms": 18022,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "more",
+      "start_ms": 18022,
+      "end_ms": 18293,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "than",
+      "start_ms": 18293,
+      "end_ms": 18563,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "the",
+      "start_ms": 18563,
+      "end_ms": 18833,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "weight",
+      "start_ms": 18833,
+      "end_ms": 19107,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "on",
+      "start_ms": 19107,
+      "end_ms": 19380,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "the",
+      "start_ms": 19380,
+      "end_ms": 19646,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "bar.",
+      "start_ms": 19646,
+      "end_ms": 19921,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "fitness"
+    },
+    {
+      "w": "I",
+      "start_ms": 20000,
+      "end_ms": 20255,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "decided",
+      "start_ms": 20255,
+      "end_ms": 20499,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "to",
+      "start_ms": 20499,
+      "end_ms": 20753,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "quit",
+      "start_ms": 20753,
+      "end_ms": 21002,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "my",
+      "start_ms": 21002,
+      "end_ms": 21254,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "job",
+      "start_ms": 21254,
+      "end_ms": 21503,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "after",
+      "start_ms": 21503,
+      "end_ms": 21747,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "the",
+      "start_ms": 21747,
+      "end_ms": 21996,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "third",
+      "start_ms": 21996,
+      "end_ms": 22246,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "missed",
+      "start_ms": 22246,
+      "end_ms": 22492,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "promotion",
+      "start_ms": 22492,
+      "end_ms": 22739,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "this",
+      "start_ms": 22739,
+      "end_ms": 22985,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "year.",
+      "start_ms": 22985,
+      "end_ms": 23234,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "A",
+      "start_ms": 23333,
+      "end_ms": 23631,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "raise",
+      "start_ms": 23631,
+      "end_ms": 23920,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "of",
+      "start_ms": 23920,
+      "end_ms": 24218,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "fifteen",
+      "start_ms": 24218,
+      "end_ms": 24510,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "percent",
+      "start_ms": 24510,
+      "end_ms": 24801,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "rarely",
+      "start_ms": 24801,
+      "end_ms": 25101,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "closes",
+      "start_ms": 25101,
+      "end_ms": 25394,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "a",
+      "start_ms": 25394,
+      "end_ms": 25689,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "real",
+      "start_ms": 25689,
+      "end_ms": 25979,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "salary",
+      "start_ms": 25979,
+      "end_ms": 26269,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "gap.",
+      "start_ms": 26269,
+      "end_ms": 26559,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "Negotiate",
+      "start_ms": 26667,
+      "end_ms": 26996,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "your",
+      "start_ms": 26996,
+      "end_ms": 27323,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "job",
+      "start_ms": 27323,
+      "end_ms": 27650,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "offer",
+      "start_ms": 27650,
+      "end_ms": 27973,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "before",
+      "start_ms": 27973,
+      "end_ms": 28294,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "you",
+      "start_ms": 28294,
+      "end_ms": 28618,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "accept",
+      "start_ms": 28618,
+      "end_ms": 28943,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "the",
+      "start_ms": 28943,
+      "end_ms": 29263,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "company",
+      "start_ms": 29263,
+      "end_ms": 29584,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "paperwork.",
+      "start_ms": 29584,
+      "end_ms": 29910,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "My",
+      "start_ms": 30000,
+      "end_ms": 30270,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "career",
+      "start_ms": 30270,
+      "end_ms": 30538,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "took",
+      "start_ms": 30538,
+      "end_ms": 30805,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "off",
+      "start_ms": 30805,
+      "end_ms": 31070,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "the",
+      "start_ms": 31070,
+      "end_ms": 31345,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "day",
+      "start_ms": 31345,
+      "end_ms": 31614,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "I",
+      "start_ms": 31614,
+      "end_ms": 31883,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "stopped",
+      "start_ms": 31883,
+      "end_ms": 32158,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "chasing",
+      "start_ms": 32158,
+      "end_ms": 32427,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "the",
+      "start_ms": 32427,
+      "end_ms": 32692,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "next",
+      "start_ms": 32692,
+      "end_ms": 32961,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "promotion.",
+      "start_ms": 32961,
+      "end_ms": 33228,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "You",
+      "start_ms": 33333,
+      "end_ms": 33630,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "should",
+      "start_ms": 33630,
+      "end_ms": 33931,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "know",
+      "start_ms": 33931,
+      "end_ms": 34227,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "your",
+      "start_ms": 34227,
+      "end_ms": 34522,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "salary",
+      "start_ms": 34522,
+      "end_ms": 34811,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "band",
+      "start_ms": 34811,
+      "end_ms": 35101,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "before",
+      "start_ms": 35101,
+      "end_ms": 35399,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "you",
+      "start_ms": 35399,
+      "end_ms": 35691,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "start",
+      "start_ms": 35691,
+      "end_ms": 35987,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "the",
+      "start_ms": 35987,
+      "end_ms": 36282,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "conversation.",
+      "start_ms": 36282,
+      "end_ms": 36574,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "Quit",
+      "start_ms": 36667,
+      "end_ms": 36917,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "the",
+      "start_ms": 36917,
+      "end_ms": 37169,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "job",
+      "start_ms": 37169,
+      "end_ms": 37414,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "that",
+      "start_ms": 37414,
+      "end_ms": 37668,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "drains",
+      "start_ms": 37668,
+      "end_ms": 37915,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "you",
+      "start_ms": 37915,
+      "end_ms": 38165,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "and",
+      "start_ms": 38165,
+      "end_ms": 38419,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "the",
+      "start_ms": 38419,
+      "end_ms": 38666,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "right",
+      "start_ms": 38666,
+      "end_ms": 38920,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "career",
+      "start_ms": 38920,
+      "end_ms": 39172,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "will",
+      "start_ms": 39172,
+      "end_ms": 39427,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "find",
+      "start_ms": 39427,
+      "end_ms": 39674,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "you.",
+      "start_ms": 39674,
+      "end_ms": 39921,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "career"
+    },
+    {
+      "w": "I",
+      "start_ms": 40000,
+      "end_ms": 40228,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "sweat",
+      "start_ms": 40228,
+      "end_ms": 40459,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "the",
+      "start_ms": 40459,
+      "end_ms": 40695,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "onion",
+      "start_ms": 40695,
+      "end_ms": 40924,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "in",
+      "start_ms": 40924,
+      "end_ms": 41161,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "the",
+      "start_ms": 41161,
+      "end_ms": 41393,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "pan",
+      "start_ms": 41393,
+      "end_ms": 41624,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "before",
+      "start_ms": 41624,
+      "end_ms": 41849,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "adding",
+      "start_ms": 41849,
+      "end_ms": 42080,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "any",
+      "start_ms": 42080,
+      "end_ms": 42314,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "garlic",
+      "start_ms": 42314,
+      "end_ms": 42540,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "to",
+      "start_ms": 42540,
+      "end_ms": 42772,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "the",
+      "start_ms": 42772,
+      "end_ms": 43000,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "recipe.",
+      "start_ms": 43000,
+      "end_ms": 43231,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "A",
+      "start_ms": 43333,
+      "end_ms": 43562,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "sharp",
+      "start_ms": 43562,
+      "end_ms": 43796,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "knife",
+      "start_ms": 43796,
+      "end_ms": 44028,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "is",
+      "start_ms": 44028,
+      "end_ms": 44255,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "the",
+      "start_ms": 44255,
+      "end_ms": 44486,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "single",
+      "start_ms": 44486,
+      "end_ms": 44721,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "most",
+      "start_ms": 44721,
+      "end_ms": 44958,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "important",
+      "start_ms": 44958,
+      "end_ms": 45188,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "tool",
+      "start_ms": 45188,
+      "end_ms": 45418,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "in",
+      "start_ms": 45418,
+      "end_ms": 45653,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "the",
+      "start_ms": 45653,
+      "end_ms": 45883,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "home",
+      "start_ms": 45883,
+      "end_ms": 46114,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "cook",
+      "start_ms": 46114,
+      "end_ms": 46344,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "kitchen.",
+      "start_ms": 46344,
+      "end_ms": 46579,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "Toast",
+      "start_ms": 46667,
+      "end_ms": 46917,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "the",
+      "start_ms": 46917,
+      "end_ms": 47169,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "spices",
+      "start_ms": 47169,
+      "end_ms": 47418,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "in",
+      "start_ms": 47418,
+      "end_ms": 47670,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "the",
+      "start_ms": 47670,
+      "end_ms": 47916,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "dry",
+      "start_ms": 47916,
+      "end_ms": 48167,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "pan",
+      "start_ms": 48167,
+      "end_ms": 48420,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "to",
+      "start_ms": 48420,
+      "end_ms": 48666,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "wake",
+      "start_ms": 48666,
+      "end_ms": 48921,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "up",
+      "start_ms": 48921,
+      "end_ms": 49170,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "the",
+      "start_ms": 49170,
+      "end_ms": 49422,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "sauce",
+      "start_ms": 49422,
+      "end_ms": 49669,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "flavor.",
+      "start_ms": 49669,
+      "end_ms": 49921,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "My",
+      "start_ms": 50000,
+      "end_ms": 50272,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "favorite",
+      "start_ms": 50272,
+      "end_ms": 50537,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "recipe",
+      "start_ms": 50537,
+      "end_ms": 50807,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "finishes",
+      "start_ms": 50807,
+      "end_ms": 51078,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "the",
+      "start_ms": 51078,
+      "end_ms": 51346,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "sauce",
+      "start_ms": 51346,
+      "end_ms": 51614,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "with",
+      "start_ms": 51614,
+      "end_ms": 51882,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "a",
+      "start_ms": 51882,
+      "end_ms": 52147,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "knob",
+      "start_ms": 52147,
+      "end_ms": 52418,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "of",
+      "start_ms": 52418,
+      "end_ms": 52688,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "cold",
+      "start_ms": 52688,
+      "end_ms": 52960,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "butter.",
+      "start_ms": 52960,
+      "end_ms": 53227,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "Cook",
+      "start_ms": 53333,
+      "end_ms": 53604,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "the",
+      "start_ms": 53604,
+      "end_ms": 53876,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "onion",
+      "start_ms": 53876,
+      "end_ms": 54148,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "low",
+      "start_ms": 54148,
+      "end_ms": 54420,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "and",
+      "start_ms": 54420,
+      "end_ms": 54692,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "slow",
+      "start_ms": 54692,
+      "end_ms": 54966,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "until",
+      "start_ms": 54966,
+      "end_ms": 55238,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "it",
+      "start_ms": 55238,
+      "end_ms": 55513,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "turns",
+      "start_ms": 55513,
+      "end_ms": 55781,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "translucent",
+      "start_ms": 55781,
+      "end_ms": 56054,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "and",
+      "start_ms": 56054,
+      "end_ms": 56322,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "sweet.",
+      "start_ms": 56322,
+      "end_ms": 56587,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "Wipe",
+      "start_ms": 56667,
+      "end_ms": 56942,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "the",
+      "start_ms": 56942,
+      "end_ms": 57215,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "knife",
+      "start_ms": 57215,
+      "end_ms": 57480,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "on",
+      "start_ms": 57480,
+      "end_ms": 57748,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "a",
+      "start_ms": 57748,
+      "end_ms": 58021,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "clean",
+      "start_ms": 58021,
+      "end_ms": 58293,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "cloth",
+      "start_ms": 58293,
+      "end_ms": 58559,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "between",
+      "start_ms": 58559,
+      "end_ms": 58834,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "every",
+      "start_ms": 58834,
+      "end_ms": 59099,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "cutting",
+      "start_ms": 59099,
+      "end_ms": 59370,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "board",
+      "start_ms": 59370,
+      "end_ms": 59646,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    },
+    {
+      "w": "pass.",
+      "start_ms": 59646,
+      "end_ms": 59911,
+      "confidence": 0.95,
+      "speaker": "S0",
+      "topic": "cooking"
+    }
+  ]
+}
