@@ -272,6 +272,67 @@ test('aspect: target_aspect "4:5" → rendered MP4 is 1080x1350',
     }
   });
 
+test('aspect: target_aspect "16:9" → rendered MP4 is 1920x1080 (v0.4.0 pillar 1)',
+  { skip: SKIP || false, timeout: 60_000 }, () => {
+    const work = join(tmpdir(), 'cf-ovl-a169-' + Date.now());
+    mkdirSync(work, { recursive: true });
+    try {
+      const cropPath = join(work, 'crop.json');
+      const editPath = join(work, 'edit.json');
+      const outPath  = join(work, 'out.mp4');
+      writeIdentityCrop(cropPath, 1920, 1080);
+      writeEdit(editPath, {
+        source: FIXTURE, crop_path: cropPath, output: outPath,
+        target_aspect: '16:9',
+      });
+      const r = runCfFfmpeg(editPath);
+      assert.equal(r.status, 0, 'render with target_aspect 16:9 must exit 0; stderr=' + r.stderr);
+      const probe = ffprobeJson(['-select_streams', 'v', '-show_streams', outPath]);
+      const v = probe.streams[0];
+      assert.equal(v.width, 1920, '16:9 must render at 1920 wide');
+      assert.equal(v.height, 1080, '16:9 must render at 1080 tall');
+      const report = JSON.parse(readFileSync(join(work, 'render_report.json'), 'utf-8'));
+      assert.equal(report.target_aspect, '16:9');
+    } finally {
+      try { rmSync(work, { recursive: true, force: true }); } catch {}
+    }
+  });
+
+test('aspect 16:9: hook overlay positioning math survives wider canvas',
+  { skip: SKIP || false, timeout: 60_000 }, () => {
+    const work = join(tmpdir(), 'cf-ovl-a169-hook-' + Date.now());
+    mkdirSync(work, { recursive: true });
+    try {
+      const sourceMp4 = buildDarkSource(work, 'dark-16x9', 3);
+      const cropPath = join(work, 'crop.json');
+      const editPath = join(work, 'edit.json');
+      const outPath  = join(work, 'out.mp4');
+      writeIdentityCrop(cropPath, 1920, 1080);
+      writeEdit(editPath, {
+        source: sourceMp4, crop_path: cropPath, output: outPath,
+        target_aspect: '16:9',
+        hook_overlay: { text: 'WIDE CANVAS', end_ms: 1800, position: 'upper-third' },
+        end_ms: 3000,
+      });
+      const r = runCfFfmpeg(editPath);
+      assert.equal(r.status, 0, '16:9 + hook overlay must exit 0; stderr=' + r.stderr);
+      // Upper third of 1080-tall canvas → y ≈ 360. Sample a 40-px band there
+      // against the dark backdrop; hook overlay must lift mean luminance.
+      const f = extractGrayFrame(outPath, 0.5);
+      assert.equal(f.height, 1080, 'extracted frame must be 1080 tall');
+      const lumaTop = f.meanLumaBand(360, 40);
+      const lumaBot = f.meanLumaBand(900, 40);
+      assert.ok(lumaTop > lumaBot + 5,
+        'hook overlay must brighten upper third vs lower; top=' + lumaTop.toFixed(1) +
+        ' bot=' + lumaBot.toFixed(1));
+      const report = JSON.parse(readFileSync(join(work, 'render_report.json'), 'utf-8'));
+      assert.equal(report.overlays?.hook?.burned, true,
+        'report must record hook burned on 16:9 canvas');
+    } finally {
+      try { rmSync(work, { recursive: true, force: true }); } catch {}
+    }
+  });
+
 test('aspect: target_aspect unset → rendered MP4 is 1080x1920 (default 9:16 baseline)',
   { skip: SKIP || false, timeout: 60_000 }, () => {
     const work = join(tmpdir(), 'cf-ovl-916-' + Date.now());

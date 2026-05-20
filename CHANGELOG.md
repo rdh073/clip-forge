@@ -5,6 +5,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — v0.4.0 pillar 1: 16:9 aspect profile
+
+- `target_aspect: "16:9"` in `edit.json` produces a 1920×1080 landscape
+  render. Same-crop-smaller-canvas rule from v0.3.0 Q5 extended to the
+  first landscape target. crop_path samples unchanged; overlay-builder
+  + hook + progress-bar positioning survive the wider canvas.
+- `ASPECT_TABLE` in `bin/lib/overlay-builder.mjs` gains the `16:9` entry.
+- Tests: 1 unit (`chooseAspectCanvas: "16:9" → 1920x1080`) + 2
+  integration (`target_aspect "16:9" → rendered MP4 is 1920x1080` and
+  `hook overlay positioning math survives wider canvas`).
+- Source: `docs/PLAN-v0.4.0.md` §3.1. See §9 EXIT CRITERIA for the rest
+  of v0.4.0.
+
 ## [0.3.0] - 2026-05-20
 
 ### Added — Pillar I hook overlay + progress bar + emoji burn + aspect profiles + VTT/SRT sidecars

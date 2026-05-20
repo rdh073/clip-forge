@@ -46,6 +46,12 @@ test('chooseAspectCanvas: "4:5" → 1080x1350', () => {
                    { w: 1080, h: 1350, name: '4:5', warning: null });
 });
 
+test('chooseAspectCanvas: "16:9" → 1920x1080 (v0.4.0 pillar 1)', () => {
+  const r = chooseAspectCanvas('16:9');
+  assert.deepEqual({ w: r.w, h: r.h, name: r.name, warning: r.warning },
+                   { w: 1920, h: 1080, name: '16:9', warning: null });
+});
+
 test('chooseAspectCanvas: unknown "5:4" → fallback to 9:16 + warning', () => {
   const r = chooseAspectCanvas('5:4');
   assert.equal(r.w, 1080);
