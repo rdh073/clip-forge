@@ -76,6 +76,13 @@ jobs:
         if: matrix.os == 'macos-latest'
         run: brew install ffmpeg
 
+      - name: Diagnose ffmpeg build (filter availability)
+        run: |
+          which ffmpeg
+          ffmpeg -version 2>&1 | head -5
+          echo '--- libass / subtitles filters ---'
+          ffmpeg -hide_banner -filters 2>&1 | grep -iE '(ass|subtitles|drawtext|drawbox)' || echo 'NONE FOUND'
+
       - name: Install ONNX models
         # Required so success-path integration tests actually run instead of
         # skipping. The two models total ~4 MB; ~5 s on either runner.
