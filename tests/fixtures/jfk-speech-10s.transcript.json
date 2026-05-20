@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "engine": "manual-aligned",
+  "language": "en",
+  "duration_s": 10.38,
+  "source_audio": "tests/fixtures/jfk-speech-10s.mp4",
+  "alignment_method": "silencedetect-anchored linear distribution within phrase regions; word boundaries within phrases are approximate (±50 ms typical, ±100 ms worst case). Phrase boundaries (start/end of each speech region) are tight (silencedetect-aligned). Adequate for R4c cut-and-re-ASR tests where cuts span whole words with generous boundaries.",
+  "words": [
+    { "w": "And",       "start_ms":   325, "end_ms":   715, "confidence": 1.0, "speaker": "S0" },
+    { "w": "so,",       "start_ms":   715, "end_ms":  1107, "confidence": 1.0, "speaker": "S0" },
+    { "w": "my",        "start_ms":  1107, "end_ms":  1499, "confidence": 1.0, "speaker": "S0" },
+    { "w": "fellow",    "start_ms":  1499, "end_ms":  1891, "confidence": 1.0, "speaker": "S0" },
+    { "w": "Americans,","start_ms":  1891, "end_ms":  2286, "confidence": 1.0, "speaker": "S0" },
+
+    { "w": "ask",       "start_ms":  3289, "end_ms":  3516, "confidence": 1.0, "speaker": "S0" },
+    { "w": "not",       "start_ms":  3516, "end_ms":  3744, "confidence": 1.0, "speaker": "S0" },
+    { "w": "what",      "start_ms":  3744, "end_ms":  3971, "confidence": 1.0, "speaker": "S0" },
+    { "w": "your",      "start_ms":  3971, "end_ms":  4199, "confidence": 1.0, "speaker": "S0" },
+    { "w": "country",   "start_ms":  4199, "end_ms":  4426, "confidence": 1.0, "speaker": "S0" },
+
+    { "w": "can",       "start_ms":  5413, "end_ms":  5822, "confidence": 1.0, "speaker": "S0" },
+    { "w": "do",        "start_ms":  5822, "end_ms":  6231, "confidence": 1.0, "speaker": "S0" },
+    { "w": "for",       "start_ms":  6231, "end_ms":  6640, "confidence": 1.0, "speaker": "S0" },
+    { "w": "you,",      "start_ms":  6640, "end_ms":  7050, "confidence": 1.0, "speaker": "S0" },
+    { "w": "ask",       "start_ms":  7050, "end_ms":  7459, "confidence": 1.0, "speaker": "S0" },
+    { "w": "what",      "start_ms":  7459, "end_ms":  7869, "confidence": 1.0, "speaker": "S0" },
+
+    { "w": "you",       "start_ms":  8188, "end_ms":  8554, "confidence": 1.0, "speaker": "S0" },
+    { "w": "can",       "start_ms":  8554, "end_ms":  8919, "confidence": 1.0, "speaker": "S0" },
+    { "w": "do",        "start_ms":  8919, "end_ms":  9285, "confidence": 1.0, "speaker": "S0" },
+    { "w": "for",       "start_ms":  9285, "end_ms":  9650, "confidence": 1.0, "speaker": "S0" },
+    { "w": "your",      "start_ms":  9650, "end_ms": 10016, "confidence": 1.0, "speaker": "S0" },
+    { "w": "country.",  "start_ms": 10016, "end_ms": 10380, "confidence": 1.0, "speaker": "S0" }
+  ],
+  "sentences": [
+    { "text": "And so, my fellow Americans,",                              "start_ms":   325, "end_ms":  2286, "speaker": "S0" },
+    { "text": "ask not what your country",                                 "start_ms":  3289, "end_ms":  4426, "speaker": "S0" },
+    { "text": "can do for you, ask what",                                  "start_ms":  5413, "end_ms":  7869, "speaker": "S0" },
+    { "text": "you can do for your country.",                              "start_ms":  8188, "end_ms": 10380, "speaker": "S0" }
+  ]
+}
