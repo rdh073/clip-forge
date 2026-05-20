@@ -10,7 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Optional GPU acceleration with CPU fallback:
   `CF_FFMPEG_ENCODER=gpu` tries FFmpeg `h264_nvenc` before `libx264`, and
   `CF_ORT_PROVIDER=gpu|cuda|coreml|dml` tries the requested ONNX Runtime
-  provider before CPU.
+  provider before CPU. README now documents the Ubuntu 24.04 CUDA/cuDNN
+  runtime packages required for ONNX CUDA.
 
 ## [0.2.0] - 2026-05-19
 

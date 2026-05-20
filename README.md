@@ -64,6 +64,33 @@ CF_ORT_PROVIDER=gpu ./bin/cf-reframe ./uploads/demo/source.mp4 --output ./crop_p
 - `CF_ORT_PROVIDER=gpu` maps to ONNX Runtime `cuda` and retries session
   creation with `cpu`. You can also set `CF_ORT_PROVIDER=cpu|cuda|coreml|dml`.
 
+### Ubuntu 24.04 CUDA Runtime
+
+For ONNX Runtime CUDA on Ubuntu 24.04, install the CUDA runtime libraries plus
+cuDNN 9. The cuDNN 9 package comes from NVIDIA's CUDA apt repo:
+
+```bash
+curl -fsSL -o /tmp/cuda-keyring_1.1-1_all.deb \
+  https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+sudo dpkg -i /tmp/cuda-keyring_1.1-1_all.deb
+sudo apt-get update
+sudo apt-get install -y \
+  libcublaslt12 libcublas12 libcurand10 libcufft11 libcudart12 libcudnn9-cuda-12
+```
+
+Verify the ONNX CUDA provider can load:
+
+```bash
+ldd node_modules/onnxruntime-node/bin/napi-v6/linux/x64/libonnxruntime_providers_cuda.so
+CF_ORT_PROVIDER=gpu ./bin/cf-reframe tests/fixtures/talking-head-5s.mp4 \
+  --output /tmp/cf-gpu-provider-test.json --sample-fps 1
+node -e "const o=require('/tmp/cf-gpu-provider-test.json'); console.log(o.detector_provider, o.landmark_provider)"
+```
+
+Expected provider output is `cuda cuda`. If either provider falls back to
+`cpu`, inspect `detector_provider_fallback_reason` or
+`landmark_provider_fallback_reason` in the generated crop path.
+
 ## Install
 
 > **Marketplace status:** ClipForge isn't on the official Claude Code marketplace yet.
@@ -72,8 +99,8 @@ CF_ORT_PROVIDER=gpu ./bin/cf-reframe ./uploads/demo/source.mp4 --output ./crop_p
 ```bash
 git clone https://github.com/rdh073/clip-forge
 cd clip-forge
-npm install                  # pulls @mediapipe/tasks-vision and friends
-node bin/install-models.mjs  # ~230 KB BlazeFace short-range model
+npm install
+node bin/install-models.mjs  # one-time Ultraface + PFLD model fetch (~4 MB total)
 claude --plugin-dir .
 ```
 
