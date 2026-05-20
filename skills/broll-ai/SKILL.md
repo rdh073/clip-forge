@@ -1,6 +1,6 @@
 ---
 name: clip-forge-broll-ai
-description: Fill broll.json gaps with AI-generated cutaway imagery via fal.ai Flux Schnell (default), Nano Banana, or Replicate. Also supports stylization (--stylize-segment with a preset). Operates ONLY on non-primary segments — refuses any segment with is_primary: true or whose time window overlaps the creator's primary face track. Cap ≤3s per cutaway. Use when the user says "fill the b-roll gaps", "AI b-roll", "stylize this cutaway", "/clip-forge:broll-ai", or when /clip-forge:start has auto_broll_ai enabled.
+description: Fill broll.json gaps with AI-generated cutaway imagery via fal.ai Flux Schnell (default), Nano Banana, or Replicate. Also supports stylization (--stylize-segment with a preset). Operates ONLY on non-primary segments — refuses any segment flagged primary or whose time window overlaps the creator's primary face track. Cap ≤3s per cutaway. Use when the user says "fill the b-roll gaps", "AI b-roll", "stylize this cutaway", "/clip-forge:broll-ai", or when /clip-forge:start has auto_broll_ai enabled.
 allowed-tools: Bash, Read, Write, AskUserQuestion
 ---
 
