@@ -567,3 +567,106 @@ test('aspect fallback: unknown target_aspect "5:4" → renders 1080x1920 + unkno
       try { rmSync(work, { recursive: true, force: true }); } catch {}
     }
   });
+
+// ============================================================
+// Composition stress: every v0.3.0 pillar in a single edit.json.
+// Regression guard for the splice + audio_source + overlay + aspect + sidecar
+// intersection. Composition broken at this intersection would slip past the
+// per-feature tests above, so this one asserts they coexist.
+// ============================================================
+
+test('composition: cuts + audio_source + hook_overlay + progress_bar + 4:5 + captions all compose',
+  { skip: SKIP || false, timeout: 120_000 }, () => {
+    const work = join(tmpdir(), 'cf-ovl-composition-' + Date.now());
+    mkdirSync(work, { recursive: true });
+    try {
+      // Build a 6-second dark synthetic source + a synthetic 48 kHz mono wav
+      // standing in for an enhanced-audio artefact. No real cf-enhance run
+      // needed; the renderer only requires a playable audio file.
+      const sourceMp4 = buildDarkSource(work, 'src', 6);
+      const enhancedWav = join(work, 'enhanced.wav');
+      const wavR = spawnSync('ffmpeg', [
+        '-y', '-hide_banner', '-loglevel', 'error',
+        '-f', 'lavfi', '-i', 'sine=frequency=440:duration=6:sample_rate=48000',
+        '-ac', '1', enhancedWav,
+      ]);
+      assert.equal(wavR.status, 0, 'enhanced.wav synth must succeed');
+
+      // Tighten plan with one cut at 2.0-2.5s, identical schema to pillar A.
+      const planPath = join(work, 'plan.json');
+      writeFileSync(planPath, JSON.stringify({
+        version: 1, clip_id: 'comp',
+        basis_start_ms: 0, basis_end_ms: 6000,
+        source_duration_ms: 6000,
+        output_duration_ms: 5500, saved_ms: 500,
+        cuts: [{
+          start_ms: 2000, end_ms: 2500,
+          source_start_ms: 2000, source_end_ms: 2500,
+          reason: 'filler_word', word: 'um',
+          duration_ms: 500, confidence_min: 0.95,
+        }],
+        kept_segments: [
+          { start_ms: 0,    end_ms: 2000, source_start_ms: 0,    source_end_ms: 2000 },
+          { start_ms: 2500, end_ms: 6000, source_start_ms: 2500, source_end_ms: 6000 },
+        ],
+        by_reason: { filler_word: 1 },
+        settings: {
+          locale: 'en', keep_pause_ms: 120, silence_threshold_db: -30,
+          min_silence_ms: 400, min_confidence: 0.85,
+          effective_min_confidence: 0.85, max_cut_ms: 600,
+          aggressive: false, no_silence: false, no_fillers: false,
+        },
+        filler_dict_version: 'en-v1',
+        fallback_used: false, fallback_reason: null, warnings: [],
+      }) + '\n');
+
+      const cropPath = join(work, 'crop.json');
+      writeIdentityCrop(cropPath);
+      const captionsJsonPath = join(work, 'captions.json');
+      const captionsAssPath  = join(work, 'captions.ass');
+      const captions = writeCaptionsJson(captionsJsonPath);
+      writeCaptionsAss(captionsAssPath, captions);
+
+      const outPath  = join(work, 'out.mp4');
+      const editPath = join(work, 'edit.json');
+      writeEdit(editPath, {
+        source: sourceMp4, crop_path: cropPath,
+        cuts: planPath, audio_source: enhancedWav,
+        captions: captionsAssPath, captions_json: captionsJsonPath,
+        hook_overlay:  { text: 'ALL FOUR PILLARS', end_ms: 1800, position: 'upper-third' },
+        progress_bar:  { enabled: true, color: '#ffffff', height_px: 8, position: 'bottom' },
+        target_aspect: '4:5',
+        output: outPath,
+        end_ms: 6000,
+      });
+
+      const r = runCfFfmpeg(editPath);
+      assert.equal(r.status, 0, 'composition render must exit 0; stderr=' + r.stderr);
+
+      // Output dims honour 4:5 → 1080×1350.
+      const probe = ffprobeJson(['-select_streams', 'v', '-show_streams', outPath]);
+      const v = probe.streams[0];
+      assert.equal(v.width, 1080,  'composition output must be 1080 wide; got ' + v.width);
+      assert.equal(v.height, 1350, 'composition output must be 1350 tall (4:5); got ' + v.height);
+
+      // Report must reflect all four pillars active simultaneously.
+      const report = JSON.parse(readFileSync(join(work, 'render_report.json'), 'utf-8'));
+      assert.equal(report.target_aspect, '4:5',
+        'report.target_aspect must echo 4:5; got ' + report.target_aspect);
+      assert.equal(report.overlays?.hook?.burned, true,
+        'report.overlays.hook.burned must be true; got ' + JSON.stringify(report.overlays?.hook));
+      assert.equal(report.overlays?.progress_bar?.burned, true,
+        'report.overlays.progress_bar.burned must be true; got ' + JSON.stringify(report.overlays?.progress_bar));
+      assert.ok(Array.isArray(report.junctions) && report.junctions.length === 1,
+        'splice path must emit 1 junction (1 cut → 2 kept segments → 1 junction); got ' +
+        JSON.stringify(report.junctions?.length));
+      assert.equal(typeof report.sidecars?.vtt, 'string',
+        'sidecars.vtt path must be present when captions emit; got ' + JSON.stringify(report.sidecars));
+      assert.equal(typeof report.sidecars?.srt, 'string',
+        'sidecars.srt path must be present when captions emit; got ' + JSON.stringify(report.sidecars));
+      assert.ok(existsSync(outPath.replace(/\.mp4$/, '.vtt')), 'composition VTT sidecar must exist on disk');
+      assert.ok(existsSync(outPath.replace(/\.mp4$/, '.srt')), 'composition SRT sidecar must exist on disk');
+    } finally {
+      try { rmSync(work, { recursive: true, force: true }); } catch {}
+    }
+  });
