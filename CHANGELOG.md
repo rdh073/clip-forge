@@ -5,6 +5,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Optional GPU acceleration with CPU fallback:
+  `CF_FFMPEG_ENCODER=gpu` tries FFmpeg `h264_nvenc` before `libx264`, and
+  `CF_ORT_PROVIDER=gpu|cuda|coreml|dml` tries the requested ONNX Runtime
+  provider before CPU.
+
 ## [0.2.0] - 2026-05-19
 
 This section will become **v0.2.0** when the `bench/v0.2.0` branch lands.

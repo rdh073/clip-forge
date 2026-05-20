@@ -50,6 +50,20 @@ honours the full timeline.
 The SessionStart hook checks all four on every Claude Code boot and warns if
 anything is missing.
 
+## Optional GPU Acceleration
+
+ClipForge stays CPU-first by default. To opt into GPU paths with CPU fallback:
+
+```bash
+CF_FFMPEG_ENCODER=gpu ./bin/cf-ffmpeg render --manifest ./path/to/edit.json
+CF_ORT_PROVIDER=gpu ./bin/cf-reframe ./uploads/demo/source.mp4 --output ./crop_path.json
+```
+
+- `CF_FFMPEG_ENCODER=gpu` uses FFmpeg `h264_nvenc` and retries with `libx264`
+  if NVENC is unavailable or rejects the job.
+- `CF_ORT_PROVIDER=gpu` maps to ONNX Runtime `cuda` and retries session
+  creation with `cpu`. You can also set `CF_ORT_PROVIDER=cpu|cuda|coreml|dml`.
+
 ## Install
 
 > **Marketplace status:** ClipForge isn't on the official Claude Code marketplace yet.

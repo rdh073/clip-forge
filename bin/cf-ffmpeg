@@ -21,6 +21,7 @@ import { dirname, resolve as resolvePath, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { chooseRenderMode, buildFilterScript } from './lib/crop-expression-builder.mjs';
+import { buildFfmpegPlan } from './lib/ffmpeg-encoder.mjs';
 
 function die(msg, code = 1) {
   process.stderr.write('cf-ffmpeg: ' + msg + '\n');
@@ -59,6 +60,25 @@ function runFfmpeg(args, { onProgress } = {}) {
   });
 }
 
+async function runFfmpegPlan(plan, opts = {}) {
+  try {
+    await runFfmpeg(plan.args, opts);
+  } catch (e) {
+    if (!plan.fallbackArgs) throw e;
+    process.stdout.write(JSON.stringify({
+      event: 'encoder_fallback',
+      from: plan.encoder,
+      to: plan.fallbackEncoder,
+      reason: firstLine(e.message),
+    }) + '\n');
+    await runFfmpeg(plan.fallbackArgs, opts);
+  }
+}
+
+function firstLine(msg) {
+  return String(msg || '').split('\n').find(Boolean) || 'ffmpeg failed';
+}
+
 async function probe(file) {
   const r = spawnSync('ffprobe', [
     '-v', 'error',
@@ -87,8 +107,11 @@ async function probe(file) {
 
 async function ingest(src, dst) {
   mkdirSync(dirname(dst), { recursive: true });
-  await runFfmpeg(['-i', src, '-c:v', 'libx264', '-preset', 'fast', '-crf', '18',
-                   '-c:a', 'aac', '-b:a', '192k', dst]);
+  const plan = buildFfmpegPlan(['-i', src], ['-c:a', 'aac', '-b:a', '192k', dst], {
+    cpuPreset: 'fast',
+    cpuCrf: 18,
+  });
+  await runFfmpegPlan(plan);
   process.stdout.write(JSON.stringify({ event: 'done', path: dst }) + '\n');
 }
 
@@ -96,9 +119,11 @@ async function captionBurn(src, ass, dst) {
   mkdirSync(dirname(dst), { recursive: true });
   // ass filter needs escaped path
   const ascii = ass.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\\'");
-  await runFfmpeg(['-i', src, '-vf', "ass='" + ascii + "'",
-                   '-c:v', 'libx264', '-preset', 'fast', '-crf', '20',
-                   '-c:a', 'copy', dst]);
+  const plan = buildFfmpegPlan(['-i', src, '-vf', "ass='" + ascii + "'"], ['-c:a', 'copy', dst], {
+    cpuPreset: 'fast',
+    cpuCrf: 20,
+  });
+  await runFfmpegPlan(plan);
   process.stdout.write(JSON.stringify({ event: 'done', path: dst }) + '\n');
 }
 
@@ -121,8 +146,11 @@ async function watermark(src, logo, dst) {
   mkdirSync(dirname(dst), { recursive: true });
   // bottom-right with 8% padding, 70% opacity
   const filter = '[1:v]format=rgba,colorchannelmixer=aa=0.7[wm];[0:v][wm]overlay=W-w-W*0.04:H-h-H*0.04';
-  await runFfmpeg(['-i', src, '-i', logo, '-filter_complex', filter,
-                   '-c:v', 'libx264', '-preset', 'fast', '-crf', '20', '-c:a', 'copy', dst]);
+  const plan = buildFfmpegPlan(['-i', src, '-i', logo, '-filter_complex', filter], ['-c:a', 'copy', dst], {
+    cpuPreset: 'fast',
+    cpuCrf: 20,
+  });
+  await runFfmpegPlan(plan);
   process.stdout.write(JSON.stringify({ event: 'done', path: dst }) + '\n');
 }
 
@@ -158,14 +186,17 @@ export function planCropArgs({ crop, source, output, startMs, endMs, captionsPat
     args.push('-vf', vf);
   }
 
-  args.push('-c:v', 'libx264',
-            '-preset', quality === 'fast' ? 'fast' : 'slow',
-            '-crf', quality === 'fast' ? '22' : '18',
-            '-c:a', 'aac', '-b:a', '192k',
-            '-movflags', '+faststart',
-            output);
+  const plan = buildFfmpegPlan(args, [
+    '-c:a', 'aac', '-b:a', '192k',
+    '-movflags', '+faststart',
+    output,
+  ], {
+    cpuPreset: quality === 'fast' ? 'fast' : 'slow',
+    cpuCrf: quality === 'fast' ? 22 : 18,
+  });
 
-  return { args, scriptFile, mode: decision.mode, keyframeCount: decision.keyframeCount,
+  return { args: plan.args, fallbackArgs: plan.fallbackArgs, encoder: plan.encoder,
+           fallbackEncoder: plan.fallbackEncoder, scriptFile, mode: decision.mode, keyframeCount: decision.keyframeCount,
            byteSize: decision.byteSize };
 }
 
@@ -194,11 +225,12 @@ async function render({ manifest }) {
 
   process.stdout.write(JSON.stringify({
     event: 'plan', mode: plan.mode, keyframes: plan.keyframeCount, expr_bytes: plan.byteSize,
+    encoder: plan.encoder,
   }) + '\n');
 
   let lastPct = -1;
   try {
-    await runFfmpeg(plan.args, {
+    await runFfmpegPlan(plan, {
       onProgress: ({ out_ms }) => {
         const total = (m.end_ms - m.start_ms);
         const pct = Math.min(99, Math.floor((out_ms / total) * 100));
@@ -240,10 +272,11 @@ async function reframeAnimated(flags) {
 
   process.stdout.write(JSON.stringify({
     event: 'plan', mode: plan.mode, keyframes: plan.keyframeCount, expr_bytes: plan.byteSize,
+    encoder: plan.encoder,
   }) + '\n');
 
   try {
-    await runFfmpeg(plan.args, {
+    await runFfmpegPlan(plan, {
       onProgress: ({ out_ms }) => {
         process.stdout.write(JSON.stringify({ event: 'progress', out_ms }) + '\n');
       },

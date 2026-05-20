@@ -27,6 +27,8 @@ import { fileURLToPath } from 'node:url';
 import * as ort from 'onnxruntime-node';
 import sharp from 'sharp';
 
+import { createOrtSessionWithFallback } from './ort-provider.mjs';
+
 const PLUGIN_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 
 // PFLD canonical input
@@ -44,6 +46,8 @@ let _disabled = false;
 let _disabledReason = null;
 let _inputName = 'input';
 let _outputName = 'output';
+let _provider = null;
+let _providerFallbackReason = null;
 
 export async function initLandmarker(opts = {}) {
   if (_session) return _session;
@@ -58,7 +62,12 @@ export async function initLandmarker(opts = {}) {
       return null;
     }
     try {
-      _session = await ort.InferenceSession.create(modelPath, { executionProviders: ['cpu'] });
+      const created = await createOrtSessionWithFallback(ort, modelPath, {
+        provider: opts.provider,
+      });
+      _session = created.session;
+      _provider = created.provider;
+      _providerFallbackReason = created.fallbackUsed ? created.fallbackReason : null;
       if (_session.inputNames && _session.inputNames.length > 0) _inputName = _session.inputNames[0];
       if (_session.outputNames && _session.outputNames.length > 0) _outputName = _session.outputNames[0];
       return _session;
@@ -76,6 +85,8 @@ export async function initLandmarker(opts = {}) {
 
 export function isLandmarkerReady() { return !!_session; }
 export function getLandmarkerReason() { return _disabledReason; }
+export function getLandmarkerProvider() { return _provider; }
+export function getLandmarkerProviderFallbackReason() { return _providerFallbackReason; }
 
 /**
  * Augment a Face object with 68-point landmarks. Returns the face unchanged
@@ -189,6 +200,8 @@ export function closeLandmarker() {
   _initPromise = null;
   _disabled = false;
   _disabledReason = null;
+  _provider = null;
+  _providerFallbackReason = null;
 }
 
 function centroid(points) {

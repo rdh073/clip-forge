@@ -24,8 +24,14 @@ import { writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { dirname, resolve as resolvePath } from 'node:path';
 
 import { extractFrames } from './lib/frame-extractor.mjs';
-import { initDetector, detectFaces, closeDetector, isDetectorReady, getDisabledReason } from './lib/face-detector.mjs';
-import { initLandmarker, detectLandmarks, closeLandmarker, isLandmarkerReady, getLandmarkerReason } from './lib/landmark-detector.mjs';
+import {
+  initDetector, detectFaces, closeDetector, isDetectorReady, getDisabledReason,
+  getDetectorProvider, getDetectorProviderFallbackReason,
+} from './lib/face-detector.mjs';
+import {
+  initLandmarker, detectLandmarks, closeLandmarker, isLandmarkerReady, getLandmarkerReason,
+  getLandmarkerProvider, getLandmarkerProviderFallbackReason,
+} from './lib/landmark-detector.mjs';
 import { ActiveSpeakerTracker, parseSpeakerMap, autoCalibrateSpeakerMap } from './lib/active-speaker.mjs';
 import { writeDebugPpm } from './lib/debug-frame.mjs';
 
@@ -242,10 +248,14 @@ async function detectPath(opts, srcW, srcH, targetW, targetH) {
     return { samples: null, reason: 'detector_unavailable: ' + (getDisabledReason() || 'unknown'),
              speakerMap };
   }
+  const detectorProvider = getDetectorProvider();
+  const detectorProviderFallbackReason = getDetectorProviderFallbackReason();
   // Pre-warm the landmarker so the frame-budget heuristic below sees its
   // readiness state before the loop starts. Lazy-init inside the loop would
   // race the budget check on the first frame.
   await initLandmarker({});
+  const landmarkerProvider = getLandmarkerProvider();
+  const landmarkerProviderFallbackReason = getLandmarkerProviderFallbackReason();
   if (!isLandmarkerReady()) {
     jlog(opts, { event: 'warn', msg: 'landmarker_unavailable: ' + (getLandmarkerReason() || 'unknown') + ' — proceeding without 68-pt keypoints' });
   }
@@ -384,12 +394,29 @@ async function detectPath(opts, srcW, srcH, targetW, targetH) {
   }
 
   if (framesProcessed === 0) {
-    return { samples: null, reason: extractorErr ? 'extractor_error: ' + extractorErr : 'no_frames_extracted',
-             speakerMap };
+    return {
+      samples: null,
+      reason: extractorErr ? 'extractor_error: ' + extractorErr : 'no_frames_extracted',
+      speakerMap,
+      detectorProvider,
+      detectorProviderFallbackReason,
+      landmarkerProvider,
+      landmarkerProviderFallbackReason,
+    };
   }
   if (framesWithFace / framesProcessed < 0.5) {
-    return { samples: null, reason: 'low_face_yield: ' + framesWithFace + '/' + framesProcessed,
-             framesProcessed, framesWithFace, framesSlow, speakerMap };
+    return {
+      samples: null,
+      reason: 'low_face_yield: ' + framesWithFace + '/' + framesProcessed,
+      framesProcessed,
+      framesWithFace,
+      framesSlow,
+      speakerMap,
+      detectorProvider,
+      detectorProviderFallbackReason,
+      landmarkerProvider,
+      landmarkerProviderFallbackReason,
+    };
   }
   if (!extractorOk) {
     jlog(opts, { event: 'partial_extraction', framesProcessed });
@@ -419,6 +446,10 @@ async function detectPath(opts, srcW, srcH, targetW, targetH) {
     samplesWithKeypoints,
     totalLandmarksPerFace,
     mouthYStddev,
+    detectorProvider,
+    detectorProviderFallbackReason,
+    landmarkerProvider,
+    landmarkerProviderFallbackReason,
   };
 }
 
@@ -457,6 +488,10 @@ function stddev(arr) {
   let stats = null;
   let resolvedMap = null;
   let landmarkDetectorLabel = null;
+  let detectorProvider = null;
+  let detectorProviderFallbackReason = null;
+  let landmarkerProvider = null;
+  let landmarkerProviderFallbackReason = null;
 
   if (opts.mode === 'face') {
     try {
@@ -464,6 +499,10 @@ function stddev(arr) {
       samples = r.samples;
       reason = r.reason || null;
       landmarkDetectorLabel = r.landmarkDetector || null;
+      detectorProvider = r.detectorProvider || null;
+      detectorProviderFallbackReason = r.detectorProviderFallbackReason || null;
+      landmarkerProvider = r.landmarkerProvider || null;
+      landmarkerProviderFallbackReason = r.landmarkerProviderFallbackReason || null;
       if (r.samples) {
         stats = {
           framesProcessed: r.framesProcessed,
@@ -510,6 +549,10 @@ function stddev(arr) {
     mode: fallback ? opts.fallbackMode : opts.mode,
     detector: detectorLabel,
     landmark_detector: landmarkDetectorLabel,
+    detector_provider: detectorProvider || undefined,
+    detector_provider_fallback_reason: detectorProviderFallbackReason || undefined,
+    landmark_provider: landmarkerProvider || undefined,
+    landmark_provider_fallback_reason: landmarkerProviderFallbackReason || undefined,
     samples,
     interp: 'linear',
     fallback_used: fallback,

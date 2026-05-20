@@ -29,6 +29,8 @@ import { fileURLToPath } from 'node:url';
 import * as ort from 'onnxruntime-node';
 import sharp from 'sharp';
 
+import { createOrtSessionWithFallback } from './ort-provider.mjs';
+
 const PLUGIN_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 
 // Ultraface RFB-320 input dimensions.
@@ -48,6 +50,8 @@ let _scoreThreshold = DEFAULT_SCORE_THRESHOLD;
 let _inputName = 'input';
 let _scoresKey = 'scores';
 let _boxesKey = 'boxes';
+let _provider = null;
+let _providerFallbackReason = null;
 
 /**
  * Initialize the singleton detector. Safe to call multiple times — only the
@@ -71,9 +75,12 @@ export async function initDetector(opts = {}) {
     }
 
     try {
-      _session = await ort.InferenceSession.create(modelPath, {
-        executionProviders: ['cpu'],
+      const created = await createOrtSessionWithFallback(ort, modelPath, {
+        provider: opts.provider,
       });
+      _session = created.session;
+      _provider = created.provider;
+      _providerFallbackReason = created.fallbackUsed ? created.fallbackReason : null;
       // Be defensive about the input/output names — Ultraface uses 'input',
       // 'scores', 'boxes' but other ONNX exports may differ.
       if (_session.inputNames && _session.inputNames.length > 0) _inputName = _session.inputNames[0];
@@ -97,6 +104,8 @@ export async function initDetector(opts = {}) {
 
 export function isDetectorReady() { return !!_session; }
 export function getDisabledReason() { return _disabledReason; }
+export function getDetectorProvider() { return _provider; }
+export function getDetectorProviderFallbackReason() { return _providerFallbackReason; }
 
 /**
  * Run the detector on a single frame.
@@ -199,6 +208,8 @@ export function closeDetector() {
   _initPromise = null;
   _disabled = false;
   _disabledReason = null;
+  _provider = null;
+  _providerFallbackReason = null;
 }
 
 function iou(a, b) {

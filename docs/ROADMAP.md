@@ -67,9 +67,10 @@ between minors".
 - **Worker-thread pool.** Move PFLD inference into a `worker_thread` pool
   (2-4 workers). Parallelize per-face landmarking. Hardens the per-frame
   budget into a real hard-cancel.
-- **Optional GPU execution provider.** Add `CUDAExecutionProvider`
-  (Linux/Windows) and `CoreMLExecutionProvider` (macOS) as opt-in via
-  `CF_ORT_PROVIDER=cuda|coreml` env. Document install steps.
+- **Benchmark optional GPU execution providers.** `CF_ORT_PROVIDER=gpu|cuda|coreml|dml`
+  now attempts the requested ONNX Runtime provider and falls back to CPU.
+  Next step: measure whether CUDA/CoreML beats CPU on the small Ultraface/PFLD
+  models enough to recommend it by default.
 - **MobileNet-class PFLD when verified-Apache lands.** Smaller model in the
   300-500 KB range with ~10 ms inference. Tracked alongside the license
   swap below.
