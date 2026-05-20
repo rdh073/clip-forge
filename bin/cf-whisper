@@ -1,108 +1,397 @@
-#!/bin/sh
-# cf-whisper — offline transcription wrapper using whisper.cpp.
-# Falls back gracefully if whisper.cpp is not installed (we emit a clear
-# install hint rather than producing a fake transcript).
-#
-# Usage:
-#   cf-whisper --in <mp4> --out <transcript.json> --model small.en [--diarize]
-#
-# Requires:
-#   - ffmpeg (audio extraction)
-#   - whisper-cli  (from whisper.cpp; aka `main` in older builds)
-#   - jq          (JSON shaping)
+#!/usr/bin/env node
+// cf-whisper — offline transcription wrapper around whisper.cpp with optional
+// brand-vocabulary biasing (pillar e, docs/PLAN-v0.3.0.md §3.2).
+//
+// Pipelines:
+//   1. Real path (default):
+//        ffmpeg → 16 kHz mono WAV → whisper-cli → canonical transcript.json
+//      whisper.cpp receives an optional `--prompt <s>` derived from
+//      --initial-prompt or --vocab.
+//
+//   2. Mock path (testing only, CF_WHISPER_TRANSCRIPT_MOCK=<path>):
+//        read the path → use as the canonical transcript JSON
+//      whisper.cpp is not invoked. Same vocab post-pass runs over the
+//      injected transcript. Modeled on pillar (c)'s CF_CLIP_SCOUT_MOCK.
+//
+//   3. Apply-vocab-only path (--apply-vocab-only --in <transcript> --vocab <p>):
+//        load transcript JSON → apply case-restore → write to --out (or --in)
+//      Used by skills/transcribe to reuse the lib without re-running ASR.
+//
+// Vocab handling:
+//   - --vocab <path>: load via bin/lib/vocab.mjs. If load fails (file missing
+//     or malformed), record transcript.vocab = {applied:false, error:'<reason>'}
+//     and continue without case-restore. Soft warning, not a hard fail.
+//   - On success, mutate transcript.words[].w via applyCaseRestore and record
+//     transcript.vocab = {applied:true, restored_count:N, warnings:[...]}.
+//   - When --vocab is NOT passed, transcript carries no `vocab` block.
+//   - vocab_terms_truncated is a soft warning; fallback_used stays false.
+//
+// Graceful degradation: every documented failure path exits 0 and writes a
+// valid transcript JSON. Hard failures (ffmpeg/whisper.cpp missing or non-zero)
+// set fallback_used:true with a fallback_reason.
+//
+// Idempotency: same inputs → byte-identical transcript JSON. Stable key
+// ordering (sorted), 2-space indent, trailing newline.
 
-set -eu
+import { spawnSync } from 'node:child_process';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { dirname, resolve as resolvePath, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { tmpdir, homedir } from 'node:os';
 
-IN=""; OUT=""; MODEL="small.en"; DIARIZE=0
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --in)      IN="$2"; shift 2 ;;
-    --out)     OUT="$2"; shift 2 ;;
-    --model)   MODEL="$2"; shift 2 ;;
-    --diarize) DIARIZE=1; shift ;;
-    *) echo "cf-whisper: unknown flag $1" >&2; exit 2 ;;
-  esac
-done
+import {
+  loadVocabFile,
+  buildWhisperInitialPrompt,
+  applyCaseRestore,
+} from './lib/vocab.mjs';
 
-if [ -z "$IN" ] || [ -z "$OUT" ]; then
-  echo "usage: cf-whisper --in <mp4> --out <json> --model <name> [--diarize]" >&2
-  exit 2
-fi
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = dirname(__filename);
 
-if ! command -v whisper-cli >/dev/null 2>&1 && ! command -v whisper >/dev/null 2>&1; then
-  echo '{"error":"whisper.cpp not installed","hint":"see https://github.com/ggerganov/whisper.cpp — clone, make, then add the binary to PATH"}' >&2
-  exit 3
-fi
+const WHISPER_PROMPT_TOKEN_CAP = 240;
 
-if ! command -v jq >/dev/null 2>&1; then
-  echo '{"error":"jq not installed","hint":"apt install jq / brew install jq"}' >&2
-  exit 3
-fi
-
-WHISPER_BIN="$(command -v whisper-cli 2>/dev/null || command -v whisper)"
-
-CACHE_DIR="${HOME}/.clip-forge/models"
-mkdir -p "$CACHE_DIR"
-MODEL_PATH="${CACHE_DIR}/ggml-${MODEL}.bin"
-
-if [ ! -f "$MODEL_PATH" ]; then
-  echo "⏳ downloading whisper model ${MODEL} to ${MODEL_PATH}" >&2
-  curl -fsSL -o "$MODEL_PATH" \
-    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-${MODEL}.bin" \
-    || { echo "{\"error\":\"model download failed\"}" >&2; exit 4; }
-fi
-
-TMP_DIR="$(mktemp -d -t cf-whisper-XXXX)"
-trap 'rm -rf "$TMP_DIR"' EXIT
-
-WAV="$TMP_DIR/audio.wav"
-ffmpeg -y -hide_banner -loglevel error -i "$IN" -ac 1 -ar 16000 "$WAV"
-
-JSON="$TMP_DIR/out.json"
-"$WHISPER_BIN" \
-  -m "$MODEL_PATH" \
-  -f "$WAV" \
-  -ml 1 \
-  --output-json-full \
-  -of "$TMP_DIR/out" \
-  >/dev/null
-
-# whisper.cpp writes <prefix>.json — shape it into ClipForge's canonical form.
-RAW="$TMP_DIR/out.json"
-[ -f "$RAW" ] || { echo '{"error":"whisper produced no json"}' >&2; exit 5; }
-
-mkdir -p "$(dirname "$OUT")"
-jq --arg model "$MODEL" '
-{
-  version: 1,
-  engine: "whisper",
-  language: (.result.language // "auto"),
-  duration_s: ((.transcription[-1].offsets.to // 0) / 1000),
-  speakers: [],
-  words: (
-    [ .transcription[] | .tokens[]? |
-      select(.text | test("^[^<\\[].*") )
-      | {
-          w: (.text | gsub("^\\s+|\\s+$"; "")),
-          start_ms: (.offsets.from // 0),
-          end_ms:   (.offsets.to   // 0),
-          speaker: 0,
-          confidence: (.p // 1.0)
-        }
-    ]
-  ),
-  sentences: [
-    .transcription[] | {
-      text: (.text | gsub("^\\s+|\\s+$"; "")),
-      start_ms: (.offsets.from // 0),
-      end_ms:   (.offsets.to   // 0),
-      speaker: 0,
-      sentiment: 0.0
+function parseArgs(argv) {
+  const out = {
+    in: null,
+    out: null,
+    model: 'small.en',
+    diarize: false,
+    initialPrompt: null,
+    vocab: null,
+    applyVocabOnly: false,
+  };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--in') out.in = argv[++i];
+    else if (a === '--out') out.out = argv[++i];
+    else if (a === '--model') out.model = argv[++i];
+    else if (a === '--diarize') out.diarize = true;
+    else if (a === '--initial-prompt') out.initialPrompt = argv[++i];
+    else if (a === '--vocab') out.vocab = argv[++i];
+    else if (a === '--apply-vocab-only') out.applyVocabOnly = true;
+    else if (a === '--help' || a === '-h') { printHelp(); process.exit(0); }
+    else {
+      process.stderr.write('cf-whisper: unknown flag ' + a + '\n');
+      process.exit(2);
     }
-  ]
+  }
+  return out;
 }
-' "$RAW" > "$OUT"
 
-WC=$(jq '.words | length' "$OUT")
-DUR=$(jq -r '.duration_s' "$OUT")
-echo "{\"event\":\"done\",\"path\":\"${OUT}\",\"words\":${WC},\"duration_s\":${DUR}}"
+function printHelp() {
+  process.stdout.write(`cf-whisper — offline ASR wrapper with brand-vocab biasing
+
+usage:
+  cf-whisper --in <mp4> --out <transcript.json> [--model small.en]
+             [--diarize] [--initial-prompt "<str>"] [--vocab <path>]
+  cf-whisper --apply-vocab-only --in <transcript.json> --out <transcript.json>
+             --vocab <path>
+
+vocab options:
+  --vocab <path>       load vocab.json; apply Whisper initial-prompt biasing
+                       AND post-pass case-restore on the produced transcript.
+  --initial-prompt <s> raw prompt passed to whisper.cpp; if >240 tokens it is
+                       truncated with a stderr warning. --vocab overrides this
+                       (vocab builds the prompt from terms).
+
+env (testing):
+  CF_WHISPER_TRANSCRIPT_MOCK=<path>
+                       skip whisper.cpp; treat <path> as the canonical
+                       transcript JSON. Vocab post-pass still applies.
+`);
+}
+
+function stableStringify(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    return '[' + value.map(stableStringify).join(',') + ']';
+  }
+  const keys = Object.keys(value).sort();
+  return '{' + keys.map((k) => JSON.stringify(k) + ':' + stableStringify(value[k])).join(',') + '}';
+}
+
+function pretty(obj) {
+  return JSON.stringify(JSON.parse(stableStringify(obj)), null, 2) + '\n';
+}
+
+function writeOutput(path, payload) {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, pretty(payload));
+}
+
+function which(cmd) {
+  const r = spawnSync('sh', ['-c', 'command -v ' + cmd], { encoding: 'utf-8' });
+  return r.status === 0 ? r.stdout.trim() : null;
+}
+
+function truncatePromptToCap(prompt, cap) {
+  if (!prompt) return { prompt: '', truncated: false };
+  const tokens = prompt.trim().split(/\s+/);
+  if (tokens.length <= cap) return { prompt: prompt.trim(), truncated: false };
+  return { prompt: tokens.slice(0, cap).join(' '), truncated: true };
+}
+
+function loadTranscriptFromMock(mockPath) {
+  if (!existsSync(mockPath)) {
+    return { ok: false, reason: 'mock_missing', err: 'CF_WHISPER_TRANSCRIPT_MOCK path not found: ' + mockPath };
+  }
+  let raw;
+  try { raw = readFileSync(mockPath, 'utf-8'); }
+  catch (e) { return { ok: false, reason: 'mock_unreadable', err: e.message }; }
+  let parsed;
+  try { parsed = JSON.parse(raw); }
+  catch (e) { return { ok: false, reason: 'mock_unreadable', err: 'mock JSON parse: ' + e.message }; }
+  return { ok: true, data: normaliseTranscript(parsed) };
+}
+
+function normaliseTranscript(raw) {
+  // Canonical shape: { version, engine, language, duration_s, speakers,
+  //                    words[], sentences[] }
+  const tx = {
+    version: 1,
+    engine: typeof raw.engine === 'string' ? raw.engine : 'whisper',
+    language: typeof raw.language === 'string' ? raw.language : 'auto',
+    duration_s: typeof raw.duration_s === 'number' ? raw.duration_s : 0,
+    speakers: Array.isArray(raw.speakers) ? raw.speakers : [],
+    words: Array.isArray(raw.words) ? raw.words.map((w) => ({
+      w: typeof w.w === 'string' ? w.w : '',
+      start_ms: typeof w.start_ms === 'number' ? w.start_ms : 0,
+      end_ms: typeof w.end_ms === 'number' ? w.end_ms : 0,
+      speaker: typeof w.speaker === 'number' ? w.speaker : 0,
+      confidence: typeof w.confidence === 'number' ? w.confidence : 1.0,
+    })) : [],
+    sentences: Array.isArray(raw.sentences) ? raw.sentences : [],
+  };
+  return tx;
+}
+
+function runWhisperPipeline(opts, initialPrompt) {
+  // Returns { ok, data, fallback_reason }
+  if (!existsSync(opts.in)) {
+    return { ok: false, fallback_reason: 'input_not_found' };
+  }
+  const whisperBin = which('whisper-cli') || which('whisper');
+  if (!whisperBin) {
+    return { ok: false, fallback_reason: 'whisper_cli_missing' };
+  }
+  if (!which('ffmpeg')) {
+    return { ok: false, fallback_reason: 'ffmpeg_missing' };
+  }
+  if (!which('jq')) {
+    return { ok: false, fallback_reason: 'jq_missing' };
+  }
+
+  const modelDir = join(homedir(), '.clip-forge', 'models');
+  mkdirSync(modelDir, { recursive: true });
+  const modelPath = join(modelDir, 'ggml-' + opts.model + '.bin');
+  if (!existsSync(modelPath)) {
+    const dl = spawnSync('curl', [
+      '-fsSL', '-o', modelPath,
+      'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-' + opts.model + '.bin',
+    ], { encoding: 'utf-8' });
+    if (dl.status !== 0) return { ok: false, fallback_reason: 'model_download_failed' };
+  }
+
+  const tmpDir = mkdtempSync(join(tmpdir(), 'cf-whisper-'));
+  try {
+    const wav = join(tmpDir, 'audio.wav');
+    const extract = spawnSync('ffmpeg', [
+      '-y', '-hide_banner', '-loglevel', 'error',
+      '-i', opts.in,
+      '-ac', '1', '-ar', '16000',
+      wav,
+    ], { encoding: 'utf-8' });
+    if (extract.status !== 0) {
+      return { ok: false, fallback_reason: 'ffmpeg_extract_failed' };
+    }
+
+    const outPrefix = join(tmpDir, 'out');
+    const whisperArgs = [
+      '-m', modelPath,
+      '-f', wav,
+      '-ml', '1',
+      '--output-json-full',
+      '-of', outPrefix,
+    ];
+    if (initialPrompt && initialPrompt.length > 0) {
+      whisperArgs.push('--prompt', initialPrompt);
+    }
+    const r = spawnSync(whisperBin, whisperArgs, { encoding: 'utf-8' });
+    if (r.status !== 0) {
+      return { ok: false, fallback_reason: 'whisper_exit_nonzero' };
+    }
+    const rawJson = outPrefix + '.json';
+    if (!existsSync(rawJson)) {
+      return { ok: false, fallback_reason: 'whisper_no_json' };
+    }
+    // Re-shape via jq to the canonical schema (same template as the v0.2 sh
+    // wrapper, kept here so the canonical output schema is byte-stable).
+    const shaped = spawnSync('jq', [
+      '--arg', 'model', opts.model,
+      `{
+         version: 1,
+         engine: "whisper",
+         language: (.result.language // "auto"),
+         duration_s: ((.transcription[-1].offsets.to // 0) / 1000),
+         speakers: [],
+         words: (
+           [ .transcription[] | .tokens[]? |
+             select(.text | test("^[^<\\\\[].*"))
+             | {
+                 w: (.text | gsub("^\\\\s+|\\\\s+$"; "")),
+                 start_ms: (.offsets.from // 0),
+                 end_ms:   (.offsets.to   // 0),
+                 speaker: 0,
+                 confidence: (.p // 1.0)
+               }
+           ]
+         ),
+         sentences: [
+           .transcription[] | {
+             text: (.text | gsub("^\\\\s+|\\\\s+$"; "")),
+             start_ms: (.offsets.from // 0),
+             end_ms:   (.offsets.to   // 0),
+             speaker: 0,
+             sentiment: 0.0
+           }
+         ]
+       }`,
+      rawJson,
+    ], { encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024 });
+    if (shaped.status !== 0) {
+      return { ok: false, fallback_reason: 'jq_shape_failed' };
+    }
+    return { ok: true, data: normaliseTranscript(JSON.parse(shaped.stdout)) };
+  } finally {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+  }
+}
+
+function fallbackTranscript(reason) {
+  return {
+    version: 1,
+    engine: 'whisper',
+    language: 'auto',
+    duration_s: 0,
+    speakers: [],
+    words: [],
+    sentences: [],
+    fallback_used: true,
+    fallback_reason: reason,
+  };
+}
+
+function applyVocabOnly(opts) {
+  if (!opts.in || !existsSync(opts.in)) {
+    const out = opts.out || opts.in;
+    if (out) writeOutput(out, fallbackTranscript('input_not_found'));
+    return 0;
+  }
+  let raw;
+  try { raw = JSON.parse(readFileSync(opts.in, 'utf-8')); }
+  catch (e) {
+    const out = opts.out || opts.in;
+    writeOutput(out, fallbackTranscript('transcript_unreadable: ' + e.message));
+    return 0;
+  }
+  const tx = normaliseTranscript(raw);
+  applyVocabToTranscript(tx, opts.vocab);
+  const out = opts.out || opts.in;
+  writeOutput(out, tx);
+  process.stdout.write(JSON.stringify({
+    event: 'done',
+    path: out,
+    words: tx.words.length,
+    vocab_applied: tx.vocab && tx.vocab.applied === true,
+  }) + '\n');
+  return 0;
+}
+
+function applyVocabToTranscript(tx, vocabPath) {
+  if (!vocabPath) return;
+  const load = loadVocabFile(vocabPath);
+  if (!load.ok) {
+    tx.vocab = {
+      applied: false,
+      error: (load.warnings[0] && load.warnings[0].code) || 'vocab_load_failed',
+    };
+    return;
+  }
+  const res = applyCaseRestore(tx, load.data);
+  tx.vocab = {
+    applied: true,
+    restored_count: res.restored_count,
+    warnings: res.warnings,
+  };
+}
+
+function main() {
+  const opts = parseArgs(process.argv.slice(2));
+
+  if (opts.applyVocabOnly) {
+    if (!opts.vocab) {
+      process.stderr.write('cf-whisper: --apply-vocab-only requires --vocab <path>\n');
+      process.exit(2);
+    }
+    process.exit(applyVocabOnly(opts));
+  }
+
+  if (!opts.in || !opts.out) {
+    process.stderr.write('usage: cf-whisper --in <mp4> --out <json> [--model <name>] [--vocab <p>]\n');
+    process.exit(2);
+  }
+
+  // Build the initial prompt (from --vocab or --initial-prompt; --vocab wins).
+  let initialPrompt = '';
+  let promptTruncated = false;
+  if (opts.vocab) {
+    const load = loadVocabFile(opts.vocab);
+    if (load.ok) {
+      const built = buildWhisperInitialPrompt(load.data);
+      initialPrompt = built.prompt;
+      // Truncation warning will be recorded on the transcript via the
+      // post-pass `vocab` block below.
+    }
+  } else if (opts.initialPrompt) {
+    const t = truncatePromptToCap(opts.initialPrompt, WHISPER_PROMPT_TOKEN_CAP);
+    initialPrompt = t.prompt;
+    promptTruncated = t.truncated;
+    if (promptTruncated) {
+      process.stderr.write('cf-whisper: --initial-prompt exceeded ' + WHISPER_PROMPT_TOKEN_CAP +
+        ' tokens; truncated\n');
+    }
+  }
+
+  let tx;
+  const mockPath = process.env.CF_WHISPER_TRANSCRIPT_MOCK || '';
+  if (mockPath) {
+    const r = loadTranscriptFromMock(mockPath);
+    if (!r.ok) {
+      tx = fallbackTranscript(r.reason + ': ' + r.err);
+    } else {
+      tx = r.data;
+    }
+  } else {
+    const r = runWhisperPipeline(opts, initialPrompt);
+    if (!r.ok) {
+      tx = fallbackTranscript(r.fallback_reason);
+    } else {
+      tx = r.data;
+    }
+  }
+
+  // Vocab post-pass.
+  applyVocabToTranscript(tx, opts.vocab);
+
+  writeOutput(opts.out, tx);
+  process.stdout.write(JSON.stringify({
+    event: 'done',
+    path: opts.out,
+    words: tx.words.length,
+    duration_s: tx.duration_s,
+    vocab_applied: tx.vocab ? tx.vocab.applied : false,
+  }) + '\n');
+  process.exit(0);
+}
+
+main();

@@ -178,4 +178,83 @@ writeFileSync(TOPIC_OUT, JSON.stringify(topicData, null, 2) + '\n');
 process.stdout.write('  ✅ ' + TOPIC_OUT + ' (' + topicData.words.length + ' words across '
   + topicData.topic_blocks.length + ' topic blocks)\n');
 
+// ----- vocab fixtures (pillar e — brand vocabulary) -----
+//
+// Four static JSON fixtures consumed by tests/integration/vocab.test.mjs:
+//   * mock-transcript-clipforge-3s.json — 3 s transcript with "clipforge"
+//     (lowercase) sandwiched between carrier words. Injected via
+//     CF_WHISPER_TRANSCRIPT_MOCK to exercise the post-pass case-restore.
+//   * mock-transcript-silent-3s.json — empty words[] + duration 3 s; the
+//     hallucination-guard fixture (vocab must NOT insert spurious terms).
+//   * sample-vocab.json — three real-world brand terms.
+//   * large-vocab.json — 200 deterministically named terms to trip the
+//     vocab_terms_truncated warning path.
+
+const CLIPFORGE_TRANSCRIPT = {
+  version: 1,
+  engine: 'mock',
+  language: 'en',
+  duration_s: 3.0,
+  speakers: [],
+  words: [
+    { w: 'I',         start_ms: 100,  end_ms: 200,  speaker: 0, confidence: 0.97 },
+    { w: 'use',       start_ms: 200,  end_ms: 500,  speaker: 0, confidence: 0.95 },
+    { w: 'clipforge', start_ms: 1000, end_ms: 1800, speaker: 0, confidence: 0.93 },
+    { w: 'every',     start_ms: 1900, end_ms: 2200, speaker: 0, confidence: 0.94 },
+    { w: 'day',       start_ms: 2300, end_ms: 2700, speaker: 0, confidence: 0.96 },
+  ],
+  sentences: [],
+};
+
+const SILENT_TRANSCRIPT = {
+  version: 1,
+  engine: 'mock',
+  language: 'en',
+  duration_s: 3.0,
+  speakers: [],
+  words: [],
+  sentences: [],
+};
+
+const SAMPLE_VOCAB = {
+  version: 1,
+  terms: [
+    { term: 'ClipForge', case: 'preserve', weight: 1.0 },
+    { term: 'Anthropic', case: 'preserve', weight: 1.0 },
+    { term: 'Sumayyah',  case: 'preserve', weight: 1.0, lang: 'en' },
+  ],
+  deepgram: { boost: 8.0 },
+  whisper:  { initial_prompt_max_tokens: 240 },
+};
+
+function buildLargeVocab(count) {
+  const terms = [];
+  for (let i = 0; i < count; i++) {
+    const id = String(i + 1).padStart(3, '0');
+    // Highest weight first so the deepgram-cap test sees a deterministic
+    // ordering of which terms make it past the 100-term cap.
+    const weight = 1.0 - (i * 0.001);
+    terms.push({ term: 'brand-' + id, case: 'preserve', weight });
+  }
+  return {
+    version: 1,
+    terms,
+    deepgram: { boost: 8.0 },
+    whisper: { initial_prompt_max_tokens: 240 },
+  };
+}
+
+const VOCAB_FIXTURES = [
+  { name: 'mock-transcript-clipforge-3s.json', data: CLIPFORGE_TRANSCRIPT },
+  { name: 'mock-transcript-silent-3s.json',    data: SILENT_TRANSCRIPT },
+  { name: 'sample-vocab.json',                 data: SAMPLE_VOCAB },
+  { name: 'large-vocab.json',                  data: buildLargeVocab(200) },
+];
+
+for (const f of VOCAB_FIXTURES) {
+  const out = resolve(DIR, f.name);
+  writeFileSync(out, JSON.stringify(f.data, null, 2) + '\n');
+  process.stdout.write('  ✅ ' + out + '\n');
+}
+
 process.exit(allOk ? 0 : 1);

@@ -37,7 +37,7 @@ ClipForge is closing.
 | Karaoke captions w/ emoji highlight  | ✅        | ✅       |
 | **Filler-word & pause removal**      | **✅**    | ✅       |
 | Speech enhance (loudnorm + denoise)  | ✅        | ✅       |
-| Brand vocabulary (custom dictionary) | ❌        | ✅       |
+| Brand vocabulary (custom dictionary) | ✅        | ✅       |
 | **Prompt-based clipping**            | **✅**    | ✅       |
 | Hook overlay + progress bar          | ❌        | ✅       |
 
@@ -59,6 +59,14 @@ return an "honest empty" `candidates: []` plus a structured `warning`
 block rather than silently falling back to virality-sort. See
 [skills/clip/SKILL.md](skills/clip/SKILL.md) and
 [agents/clip-scout.md](agents/clip-scout.md).
+
+Pillar (e) Brand vocabulary landed as `--vocab ~/.clip-forge/vocab.json` on
+`bin/cf-whisper` (and a Deepgram `keywords[]` passthrough in
+`skills/transcribe/SKILL.md`). Per-user `vocab.json` carries a list of
+brand / product / proper-noun terms; transcripts run a case-restore
+post-pass so "clipforge", "Clip-Forge", or "Clipforge!" all canonicalise
+to the casing in `vocab.json`. Hallucination-guarded — a silent input
+stays silent. See [skills/transcribe/SKILL.md](skills/transcribe/SKILL.md).
 
 **Known characteristics:**
 - PFLD inference is ~60 ms per face on CPU. A 30-minute source at 6 fps
@@ -410,6 +418,57 @@ node bin/cf-enhance \
   --target-lufs -14 \
   --edit-json ./clips/demo/c01/edit.json
 ```
+
+## Brand vocabulary
+
+`~/.clip-forge/vocab.json` (per-user, v0.3.0) biases both transcription
+backends toward correct casing of brand names, product names, and proper
+nouns. The Deepgram branch passes `keywords[]` to the MCP `transcribe`
+tool; the Whisper branch passes `--prompt` to `whisper.cpp`. A
+case-restoring post-pass runs against the produced transcript regardless of
+backend, so "clipforge", "Clip-Forge", and "Clipforge!" all canonicalise to
+the casing in `vocab.json`.
+
+### Schema
+
+```jsonc
+{
+  "version": 1,
+  "terms": [
+    { "term": "ClipForge", "case": "preserve", "weight": 1.0 },
+    { "term": "Anthropic", "case": "preserve", "weight": 1.0 },
+    { "term": "Sumayyah",  "case": "preserve", "weight": 1.0, "lang": "en" }
+  ],
+  "deepgram": { "boost": 8.0 },
+  "whisper":  { "initial_prompt_max_tokens": 240 }
+}
+```
+
+| Field                                  | Default      | Meaning                                                                                  |
+|----------------------------------------|--------------|------------------------------------------------------------------------------------------|
+| `terms[].term`                         | required     | Casing-preserving brand or proper noun.                                                  |
+| `terms[].case`                         | `"preserve"` | Only mode for v0.3.0 — restore the term's casing in the transcript.                      |
+| `terms[].weight`                       | `1.0`        | Tie-break + boost scaler. Higher = preferred when terms compete for the same span.        |
+| `terms[].lang`                         | omitted      | Optional ISO code; reserved for v0.3.1 language-scoped matching (no-op today).            |
+| `deepgram.boost`                       | `8.0`        | Multiplied by term weight → integer 0–10 Deepgram boost.                                 |
+| `whisper.initial_prompt_max_tokens`    | `240`        | Whitespace-token cap on the synthesized Whisper prompt.                                  |
+
+### Example invocation
+
+```bash
+node bin/cf-whisper \
+  --in   ./uploads/demo/source.mp4 \
+  --out  ./uploads/demo/transcript.json \
+  --vocab ~/.clip-forge/vocab.json
+```
+
+When `--vocab` is set, the produced transcript carries a top-level `vocab`
+block (`{applied:true, restored_count:N, warnings:[...]}`). When the flag
+is omitted, the field is absent. Missing `~/.clip-forge/vocab.json` is the
+unset default — no warning, no fallback. See
+[skills/transcribe/SKILL.md](skills/transcribe/SKILL.md) for the full
+contract including the Deepgram-branch wiring and the
+`CF_WHISPER_TRANSCRIPT_MOCK` testing hook.
 
 ## File layout in your project
 

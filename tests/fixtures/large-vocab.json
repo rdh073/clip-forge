@@ -1,0 +1,1011 @@
+{
+  "version": 1,
+  "terms": [
+    {
+      "term": "brand-001",
+      "case": "preserve",
+      "weight": 1
+    },
+    {
+      "term": "brand-002",
+      "case": "preserve",
+      "weight": 0.999
+    },
+    {
+      "term": "brand-003",
+      "case": "preserve",
+      "weight": 0.998
+    },
+    {
+      "term": "brand-004",
+      "case": "preserve",
+      "weight": 0.997
+    },
+    {
+      "term": "brand-005",
+      "case": "preserve",
+      "weight": 0.996
+    },
+    {
+      "term": "brand-006",
+      "case": "preserve",
+      "weight": 0.995
+    },
+    {
+      "term": "brand-007",
+      "case": "preserve",
+      "weight": 0.994
+    },
+    {
+      "term": "brand-008",
+      "case": "preserve",
+      "weight": 0.993
+    },
+    {
+      "term": "brand-009",
+      "case": "preserve",
+      "weight": 0.992
+    },
+    {
+      "term": "brand-010",
+      "case": "preserve",
+      "weight": 0.991
+    },
+    {
+      "term": "brand-011",
+      "case": "preserve",
+      "weight": 0.99
+    },
+    {
+      "term": "brand-012",
+      "case": "preserve",
+      "weight": 0.989
+    },
+    {
+      "term": "brand-013",
+      "case": "preserve",
+      "weight": 0.988
+    },
+    {
+      "term": "brand-014",
+      "case": "preserve",
+      "weight": 0.987
+    },
+    {
+      "term": "brand-015",
+      "case": "preserve",
+      "weight": 0.986
+    },
+    {
+      "term": "brand-016",
+      "case": "preserve",
+      "weight": 0.985
+    },
+    {
+      "term": "brand-017",
+      "case": "preserve",
+      "weight": 0.984
+    },
+    {
+      "term": "brand-018",
+      "case": "preserve",
+      "weight": 0.983
+    },
+    {
+      "term": "brand-019",
+      "case": "preserve",
+      "weight": 0.982
+    },
+    {
+      "term": "brand-020",
+      "case": "preserve",
+      "weight": 0.981
+    },
+    {
+      "term": "brand-021",
+      "case": "preserve",
+      "weight": 0.98
+    },
+    {
+      "term": "brand-022",
+      "case": "preserve",
+      "weight": 0.979
+    },
+    {
+      "term": "brand-023",
+      "case": "preserve",
+      "weight": 0.978
+    },
+    {
+      "term": "brand-024",
+      "case": "preserve",
+      "weight": 0.977
+    },
+    {
+      "term": "brand-025",
+      "case": "preserve",
+      "weight": 0.976
+    },
+    {
+      "term": "brand-026",
+      "case": "preserve",
+      "weight": 0.975
+    },
+    {
+      "term": "brand-027",
+      "case": "preserve",
+      "weight": 0.974
+    },
+    {
+      "term": "brand-028",
+      "case": "preserve",
+      "weight": 0.973
+    },
+    {
+      "term": "brand-029",
+      "case": "preserve",
+      "weight": 0.972
+    },
+    {
+      "term": "brand-030",
+      "case": "preserve",
+      "weight": 0.971
+    },
+    {
+      "term": "brand-031",
+      "case": "preserve",
+      "weight": 0.97
+    },
+    {
+      "term": "brand-032",
+      "case": "preserve",
+      "weight": 0.969
+    },
+    {
+      "term": "brand-033",
+      "case": "preserve",
+      "weight": 0.968
+    },
+    {
+      "term": "brand-034",
+      "case": "preserve",
+      "weight": 0.967
+    },
+    {
+      "term": "brand-035",
+      "case": "preserve",
+      "weight": 0.966
+    },
+    {
+      "term": "brand-036",
+      "case": "preserve",
+      "weight": 0.965
+    },
+    {
+      "term": "brand-037",
+      "case": "preserve",
+      "weight": 0.964
+    },
+    {
+      "term": "brand-038",
+      "case": "preserve",
+      "weight": 0.963
+    },
+    {
+      "term": "brand-039",
+      "case": "preserve",
+      "weight": 0.962
+    },
+    {
+      "term": "brand-040",
+      "case": "preserve",
+      "weight": 0.961
+    },
+    {
+      "term": "brand-041",
+      "case": "preserve",
+      "weight": 0.96
+    },
+    {
+      "term": "brand-042",
+      "case": "preserve",
+      "weight": 0.959
+    },
+    {
+      "term": "brand-043",
+      "case": "preserve",
+      "weight": 0.958
+    },
+    {
+      "term": "brand-044",
+      "case": "preserve",
+      "weight": 0.957
+    },
+    {
+      "term": "brand-045",
+      "case": "preserve",
+      "weight": 0.956
+    },
+    {
+      "term": "brand-046",
+      "case": "preserve",
+      "weight": 0.955
+    },
+    {
+      "term": "brand-047",
+      "case": "preserve",
+      "weight": 0.954
+    },
+    {
+      "term": "brand-048",
+      "case": "preserve",
+      "weight": 0.953
+    },
+    {
+      "term": "brand-049",
+      "case": "preserve",
+      "weight": 0.952
+    },
+    {
+      "term": "brand-050",
+      "case": "preserve",
+      "weight": 0.951
+    },
+    {
+      "term": "brand-051",
+      "case": "preserve",
+      "weight": 0.95
+    },
+    {
+      "term": "brand-052",
+      "case": "preserve",
+      "weight": 0.949
+    },
+    {
+      "term": "brand-053",
+      "case": "preserve",
+      "weight": 0.948
+    },
+    {
+      "term": "brand-054",
+      "case": "preserve",
+      "weight": 0.947
+    },
+    {
+      "term": "brand-055",
+      "case": "preserve",
+      "weight": 0.946
+    },
+    {
+      "term": "brand-056",
+      "case": "preserve",
+      "weight": 0.945
+    },
+    {
+      "term": "brand-057",
+      "case": "preserve",
+      "weight": 0.944
+    },
+    {
+      "term": "brand-058",
+      "case": "preserve",
+      "weight": 0.943
+    },
+    {
+      "term": "brand-059",
+      "case": "preserve",
+      "weight": 0.942
+    },
+    {
+      "term": "brand-060",
+      "case": "preserve",
+      "weight": 0.941
+    },
+    {
+      "term": "brand-061",
+      "case": "preserve",
+      "weight": 0.94
+    },
+    {
+      "term": "brand-062",
+      "case": "preserve",
+      "weight": 0.9390000000000001
+    },
+    {
+      "term": "brand-063",
+      "case": "preserve",
+      "weight": 0.938
+    },
+    {
+      "term": "brand-064",
+      "case": "preserve",
+      "weight": 0.937
+    },
+    {
+      "term": "brand-065",
+      "case": "preserve",
+      "weight": 0.9359999999999999
+    },
+    {
+      "term": "brand-066",
+      "case": "preserve",
+      "weight": 0.935
+    },
+    {
+      "term": "brand-067",
+      "case": "preserve",
+      "weight": 0.9339999999999999
+    },
+    {
+      "term": "brand-068",
+      "case": "preserve",
+      "weight": 0.933
+    },
+    {
+      "term": "brand-069",
+      "case": "preserve",
+      "weight": 0.9319999999999999
+    },
+    {
+      "term": "brand-070",
+      "case": "preserve",
+      "weight": 0.931
+    },
+    {
+      "term": "brand-071",
+      "case": "preserve",
+      "weight": 0.9299999999999999
+    },
+    {
+      "term": "brand-072",
+      "case": "preserve",
+      "weight": 0.929
+    },
+    {
+      "term": "brand-073",
+      "case": "preserve",
+      "weight": 0.9279999999999999
+    },
+    {
+      "term": "brand-074",
+      "case": "preserve",
+      "weight": 0.927
+    },
+    {
+      "term": "brand-075",
+      "case": "preserve",
+      "weight": 0.926
+    },
+    {
+      "term": "brand-076",
+      "case": "preserve",
+      "weight": 0.925
+    },
+    {
+      "term": "brand-077",
+      "case": "preserve",
+      "weight": 0.924
+    },
+    {
+      "term": "brand-078",
+      "case": "preserve",
+      "weight": 0.923
+    },
+    {
+      "term": "brand-079",
+      "case": "preserve",
+      "weight": 0.922
+    },
+    {
+      "term": "brand-080",
+      "case": "preserve",
+      "weight": 0.921
+    },
+    {
+      "term": "brand-081",
+      "case": "preserve",
+      "weight": 0.92
+    },
+    {
+      "term": "brand-082",
+      "case": "preserve",
+      "weight": 0.919
+    },
+    {
+      "term": "brand-083",
+      "case": "preserve",
+      "weight": 0.918
+    },
+    {
+      "term": "brand-084",
+      "case": "preserve",
+      "weight": 0.917
+    },
+    {
+      "term": "brand-085",
+      "case": "preserve",
+      "weight": 0.916
+    },
+    {
+      "term": "brand-086",
+      "case": "preserve",
+      "weight": 0.915
+    },
+    {
+      "term": "brand-087",
+      "case": "preserve",
+      "weight": 0.914
+    },
+    {
+      "term": "brand-088",
+      "case": "preserve",
+      "weight": 0.913
+    },
+    {
+      "term": "brand-089",
+      "case": "preserve",
+      "weight": 0.912
+    },
+    {
+      "term": "brand-090",
+      "case": "preserve",
+      "weight": 0.911
+    },
+    {
+      "term": "brand-091",
+      "case": "preserve",
+      "weight": 0.91
+    },
+    {
+      "term": "brand-092",
+      "case": "preserve",
+      "weight": 0.909
+    },
+    {
+      "term": "brand-093",
+      "case": "preserve",
+      "weight": 0.908
+    },
+    {
+      "term": "brand-094",
+      "case": "preserve",
+      "weight": 0.907
+    },
+    {
+      "term": "brand-095",
+      "case": "preserve",
+      "weight": 0.906
+    },
+    {
+      "term": "brand-096",
+      "case": "preserve",
+      "weight": 0.905
+    },
+    {
+      "term": "brand-097",
+      "case": "preserve",
+      "weight": 0.904
+    },
+    {
+      "term": "brand-098",
+      "case": "preserve",
+      "weight": 0.903
+    },
+    {
+      "term": "brand-099",
+      "case": "preserve",
+      "weight": 0.902
+    },
+    {
+      "term": "brand-100",
+      "case": "preserve",
+      "weight": 0.901
+    },
+    {
+      "term": "brand-101",
+      "case": "preserve",
+      "weight": 0.9
+    },
+    {
+      "term": "brand-102",
+      "case": "preserve",
+      "weight": 0.899
+    },
+    {
+      "term": "brand-103",
+      "case": "preserve",
+      "weight": 0.898
+    },
+    {
+      "term": "brand-104",
+      "case": "preserve",
+      "weight": 0.897
+    },
+    {
+      "term": "brand-105",
+      "case": "preserve",
+      "weight": 0.896
+    },
+    {
+      "term": "brand-106",
+      "case": "preserve",
+      "weight": 0.895
+    },
+    {
+      "term": "brand-107",
+      "case": "preserve",
+      "weight": 0.894
+    },
+    {
+      "term": "brand-108",
+      "case": "preserve",
+      "weight": 0.893
+    },
+    {
+      "term": "brand-109",
+      "case": "preserve",
+      "weight": 0.892
+    },
+    {
+      "term": "brand-110",
+      "case": "preserve",
+      "weight": 0.891
+    },
+    {
+      "term": "brand-111",
+      "case": "preserve",
+      "weight": 0.89
+    },
+    {
+      "term": "brand-112",
+      "case": "preserve",
+      "weight": 0.889
+    },
+    {
+      "term": "brand-113",
+      "case": "preserve",
+      "weight": 0.888
+    },
+    {
+      "term": "brand-114",
+      "case": "preserve",
+      "weight": 0.887
+    },
+    {
+      "term": "brand-115",
+      "case": "preserve",
+      "weight": 0.886
+    },
+    {
+      "term": "brand-116",
+      "case": "preserve",
+      "weight": 0.885
+    },
+    {
+      "term": "brand-117",
+      "case": "preserve",
+      "weight": 0.884
+    },
+    {
+      "term": "brand-118",
+      "case": "preserve",
+      "weight": 0.883
+    },
+    {
+      "term": "brand-119",
+      "case": "preserve",
+      "weight": 0.882
+    },
+    {
+      "term": "brand-120",
+      "case": "preserve",
+      "weight": 0.881
+    },
+    {
+      "term": "brand-121",
+      "case": "preserve",
+      "weight": 0.88
+    },
+    {
+      "term": "brand-122",
+      "case": "preserve",
+      "weight": 0.879
+    },
+    {
+      "term": "brand-123",
+      "case": "preserve",
+      "weight": 0.878
+    },
+    {
+      "term": "brand-124",
+      "case": "preserve",
+      "weight": 0.877
+    },
+    {
+      "term": "brand-125",
+      "case": "preserve",
+      "weight": 0.876
+    },
+    {
+      "term": "brand-126",
+      "case": "preserve",
+      "weight": 0.875
+    },
+    {
+      "term": "brand-127",
+      "case": "preserve",
+      "weight": 0.874
+    },
+    {
+      "term": "brand-128",
+      "case": "preserve",
+      "weight": 0.873
+    },
+    {
+      "term": "brand-129",
+      "case": "preserve",
+      "weight": 0.872
+    },
+    {
+      "term": "brand-130",
+      "case": "preserve",
+      "weight": 0.871
+    },
+    {
+      "term": "brand-131",
+      "case": "preserve",
+      "weight": 0.87
+    },
+    {
+      "term": "brand-132",
+      "case": "preserve",
+      "weight": 0.869
+    },
+    {
+      "term": "brand-133",
+      "case": "preserve",
+      "weight": 0.868
+    },
+    {
+      "term": "brand-134",
+      "case": "preserve",
+      "weight": 0.867
+    },
+    {
+      "term": "brand-135",
+      "case": "preserve",
+      "weight": 0.866
+    },
+    {
+      "term": "brand-136",
+      "case": "preserve",
+      "weight": 0.865
+    },
+    {
+      "term": "brand-137",
+      "case": "preserve",
+      "weight": 0.864
+    },
+    {
+      "term": "brand-138",
+      "case": "preserve",
+      "weight": 0.863
+    },
+    {
+      "term": "brand-139",
+      "case": "preserve",
+      "weight": 0.862
+    },
+    {
+      "term": "brand-140",
+      "case": "preserve",
+      "weight": 0.861
+    },
+    {
+      "term": "brand-141",
+      "case": "preserve",
+      "weight": 0.86
+    },
+    {
+      "term": "brand-142",
+      "case": "preserve",
+      "weight": 0.859
+    },
+    {
+      "term": "brand-143",
+      "case": "preserve",
+      "weight": 0.858
+    },
+    {
+      "term": "brand-144",
+      "case": "preserve",
+      "weight": 0.857
+    },
+    {
+      "term": "brand-145",
+      "case": "preserve",
+      "weight": 0.856
+    },
+    {
+      "term": "brand-146",
+      "case": "preserve",
+      "weight": 0.855
+    },
+    {
+      "term": "brand-147",
+      "case": "preserve",
+      "weight": 0.854
+    },
+    {
+      "term": "brand-148",
+      "case": "preserve",
+      "weight": 0.853
+    },
+    {
+      "term": "brand-149",
+      "case": "preserve",
+      "weight": 0.852
+    },
+    {
+      "term": "brand-150",
+      "case": "preserve",
+      "weight": 0.851
+    },
+    {
+      "term": "brand-151",
+      "case": "preserve",
+      "weight": 0.85
+    },
+    {
+      "term": "brand-152",
+      "case": "preserve",
+      "weight": 0.849
+    },
+    {
+      "term": "brand-153",
+      "case": "preserve",
+      "weight": 0.848
+    },
+    {
+      "term": "brand-154",
+      "case": "preserve",
+      "weight": 0.847
+    },
+    {
+      "term": "brand-155",
+      "case": "preserve",
+      "weight": 0.846
+    },
+    {
+      "term": "brand-156",
+      "case": "preserve",
+      "weight": 0.845
+    },
+    {
+      "term": "brand-157",
+      "case": "preserve",
+      "weight": 0.844
+    },
+    {
+      "term": "brand-158",
+      "case": "preserve",
+      "weight": 0.843
+    },
+    {
+      "term": "brand-159",
+      "case": "preserve",
+      "weight": 0.842
+    },
+    {
+      "term": "brand-160",
+      "case": "preserve",
+      "weight": 0.841
+    },
+    {
+      "term": "brand-161",
+      "case": "preserve",
+      "weight": 0.84
+    },
+    {
+      "term": "brand-162",
+      "case": "preserve",
+      "weight": 0.839
+    },
+    {
+      "term": "brand-163",
+      "case": "preserve",
+      "weight": 0.838
+    },
+    {
+      "term": "brand-164",
+      "case": "preserve",
+      "weight": 0.837
+    },
+    {
+      "term": "brand-165",
+      "case": "preserve",
+      "weight": 0.836
+    },
+    {
+      "term": "brand-166",
+      "case": "preserve",
+      "weight": 0.835
+    },
+    {
+      "term": "brand-167",
+      "case": "preserve",
+      "weight": 0.834
+    },
+    {
+      "term": "brand-168",
+      "case": "preserve",
+      "weight": 0.833
+    },
+    {
+      "term": "brand-169",
+      "case": "preserve",
+      "weight": 0.832
+    },
+    {
+      "term": "brand-170",
+      "case": "preserve",
+      "weight": 0.831
+    },
+    {
+      "term": "brand-171",
+      "case": "preserve",
+      "weight": 0.83
+    },
+    {
+      "term": "brand-172",
+      "case": "preserve",
+      "weight": 0.829
+    },
+    {
+      "term": "brand-173",
+      "case": "preserve",
+      "weight": 0.828
+    },
+    {
+      "term": "brand-174",
+      "case": "preserve",
+      "weight": 0.827
+    },
+    {
+      "term": "brand-175",
+      "case": "preserve",
+      "weight": 0.826
+    },
+    {
+      "term": "brand-176",
+      "case": "preserve",
+      "weight": 0.825
+    },
+    {
+      "term": "brand-177",
+      "case": "preserve",
+      "weight": 0.8240000000000001
+    },
+    {
+      "term": "brand-178",
+      "case": "preserve",
+      "weight": 0.823
+    },
+    {
+      "term": "brand-179",
+      "case": "preserve",
+      "weight": 0.8220000000000001
+    },
+    {
+      "term": "brand-180",
+      "case": "preserve",
+      "weight": 0.821
+    },
+    {
+      "term": "brand-181",
+      "case": "preserve",
+      "weight": 0.8200000000000001
+    },
+    {
+      "term": "brand-182",
+      "case": "preserve",
+      "weight": 0.819
+    },
+    {
+      "term": "brand-183",
+      "case": "preserve",
+      "weight": 0.8180000000000001
+    },
+    {
+      "term": "brand-184",
+      "case": "preserve",
+      "weight": 0.817
+    },
+    {
+      "term": "brand-185",
+      "case": "preserve",
+      "weight": 0.8160000000000001
+    },
+    {
+      "term": "brand-186",
+      "case": "preserve",
+      "weight": 0.815
+    },
+    {
+      "term": "brand-187",
+      "case": "preserve",
+      "weight": 0.8140000000000001
+    },
+    {
+      "term": "brand-188",
+      "case": "preserve",
+      "weight": 0.813
+    },
+    {
+      "term": "brand-189",
+      "case": "preserve",
+      "weight": 0.812
+    },
+    {
+      "term": "brand-190",
+      "case": "preserve",
+      "weight": 0.8109999999999999
+    },
+    {
+      "term": "brand-191",
+      "case": "preserve",
+      "weight": 0.81
+    },
+    {
+      "term": "brand-192",
+      "case": "preserve",
+      "weight": 0.8089999999999999
+    },
+    {
+      "term": "brand-193",
+      "case": "preserve",
+      "weight": 0.808
+    },
+    {
+      "term": "brand-194",
+      "case": "preserve",
+      "weight": 0.8069999999999999
+    },
+    {
+      "term": "brand-195",
+      "case": "preserve",
+      "weight": 0.806
+    },
+    {
+      "term": "brand-196",
+      "case": "preserve",
+      "weight": 0.8049999999999999
+    },
+    {
+      "term": "brand-197",
+      "case": "preserve",
+      "weight": 0.804
+    },
+    {
+      "term": "brand-198",
+      "case": "preserve",
+      "weight": 0.8029999999999999
+    },
+    {
+      "term": "brand-199",
+      "case": "preserve",
+      "weight": 0.802
+    },
+    {
+      "term": "brand-200",
+      "case": "preserve",
+      "weight": 0.8009999999999999
+    }
+  ],
+  "deepgram": {
+    "boost": 8
+  },
+  "whisper": {
+    "initial_prompt_max_tokens": 240
+  }
+}

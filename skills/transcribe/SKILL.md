@@ -100,3 +100,113 @@ audio extraction, and shape normalization.
 
 `/clip-forge:clip` reads this file directly — do not re-run unless the source
 changed (compare `mtime` of source.mp4 vs transcript.json).
+
+## Brand vocabulary (pillar e — v0.3.0)
+
+### Vocab scope
+
+Per-user only for v0.3.0: `~/.clip-forge/vocab.json`. The per-project overlay
+(`./.clip-forge/vocab.json` next to the working directory's `uploads/`) is
+**deferred to v0.3.1** per the decision in
+[docs/PLAN-v0.3.0.md](../../docs/PLAN-v0.3.0.md) §7 Q2 / §9.
+
+### Vocab schema
+
+```jsonc
+{
+  "version": 1,
+  "terms": [
+    { "term": "ClipForge", "case": "preserve", "weight": 1.0 },
+    { "term": "Anthropic", "case": "preserve", "weight": 1.0 },
+    { "term": "Sumayyah",  "case": "preserve", "weight": 1.0, "lang": "en" }
+  ],
+  "deepgram": { "boost": 8.0 },
+  "whisper":  { "initial_prompt_max_tokens": 240 }
+}
+```
+
+| Field                                  | Default      | Meaning                                                                                  |
+|----------------------------------------|--------------|------------------------------------------------------------------------------------------|
+| `terms[].term`                         | required     | Casing-preserving brand or proper noun.                                                  |
+| `terms[].case`                         | `"preserve"` | Only mode for v0.3.0 — restore the term's casing in the transcript.                      |
+| `terms[].weight`                       | `1.0`        | Tie-break + boost scaler. Higher = preferred when two terms compete for the same span.   |
+| `terms[].lang`                         | omitted      | Optional ISO code; reserved for v0.3.1 language-scoped matching (no-op today).           |
+| `deepgram.boost`                       | `8.0`        | Multiplied by term weight → integer 0–10 Deepgram boost.                                 |
+| `whisper.initial_prompt_max_tokens`    | `240`        | Whitespace-token cap on the synthesized Whisper prompt.                                  |
+
+### Vocab loading
+
+When `~/.clip-forge/vocab.json` exists, the skill loads it and:
+
+- **Deepgram branch.** Build the Deepgram `keywords` array via
+  `bin/lib/vocab.mjs` `buildDeepgramKeywords(vocab)` and pass it as the
+  `keywords` option of the deepgram MCP `transcribe` tool. After Deepgram
+  returns, run the case-restore post-pass to canonicalise the transcript
+  even when Deepgram's `keywords` boost did not produce the desired casing.
+- **Whisper branch.** Pass `--vocab ~/.clip-forge/vocab.json` to
+  `cf-whisper`. The wrapper builds the Whisper `--prompt` internally
+  (`buildWhisperInitialPrompt`) AND applies the case-restore post-pass on
+  the produced transcript.
+- **Shared post-pass route.** To run case-restore on a transcript that
+  already exists (e.g. Deepgram output written to disk), shell out:
+
+  ```bash
+  ${CLAUDE_PLUGIN_ROOT}/bin/cf-whisper \
+    --apply-vocab-only \
+    --in  ./uploads/<slug>/transcript.json \
+    --out ./uploads/<slug>/transcript.json \
+    --vocab ~/.clip-forge/vocab.json
+  ```
+
+  This reuses `bin/lib/vocab.mjs` without re-running ASR.
+
+If `~/.clip-forge/vocab.json` is absent the skill does nothing extra. No
+warning is emitted — missing vocab is the unset default.
+
+### Canonical schema additions (transcript.json)
+
+When `--vocab` was applied, transcript JSON carries an extra `vocab` block:
+
+```json
+{
+  "vocab": {
+    "applied": true,
+    "restored_count": 1,
+    "warnings": []
+  }
+}
+```
+
+When vocab load fails (file unreadable / malformed), the block records the
+soft failure but transcription proceeds:
+
+```json
+{
+  "vocab": {
+    "applied": false,
+    "error": "vocab_unreadable"
+  }
+}
+```
+
+When no `--vocab` was passed at all, the `vocab` field is omitted entirely.
+
+### Testing
+
+`cf-whisper` honors `CF_WHISPER_TRANSCRIPT_MOCK=<path>`. When set, the
+wrapper does NOT invoke whisper.cpp; it reads the path as a canonical
+transcript JSON, runs canonical-shape normalisation, and then applies the
+vocab post-pass exactly as for a real ASR run. This is the entry point
+used by `tests/integration/vocab.test.mjs` so CI runs green without
+whisper.cpp installed. Modeled on `CF_CLIP_SCOUT_MOCK` from pillar (c).
+
+### Graceful degradation
+
+| Condition                                        | Behaviour                                                                                                              |
+|--------------------------------------------------|------------------------------------------------------------------------------------------------------------------------|
+| `~/.clip-forge/vocab.json` missing               | Skip vocab entirely. No warning. `transcript.vocab` is omitted.                                                        |
+| Vocab JSON unreadable                            | Soft warning. `transcript.vocab = {applied:false, error:"vocab_unreadable"}`. Transcription proceeds without bias.     |
+| Vocab > 100 terms                                | Soft warning `vocab_terms_truncated` recorded in the Deepgram keyword build path. `fallback_used` stays `false`.       |
+| Whisper initial-prompt > 240 tokens              | Soft warning `vocab_terms_truncated`. Prompt truncated; transcription still runs.                                      |
+| `--initial-prompt` (raw) > 240 tokens            | Stderr warning. Prompt truncated to 240 tokens. cf-whisper still exits 0.                                              |
+| Silent input + vocab                             | `transcript.words = []`, `transcript.vocab.restored_count = 0`. Vocab MUST NOT inject brand terms into empty input.    |

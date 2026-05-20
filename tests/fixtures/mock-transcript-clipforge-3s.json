@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "engine": "mock",
+  "language": "en",
+  "duration_s": 3,
+  "speakers": [],
+  "words": [
+    {
+      "w": "I",
+      "start_ms": 100,
+      "end_ms": 200,
+      "speaker": 0,
+      "confidence": 0.97
+    },
+    {
+      "w": "use",
+      "start_ms": 200,
+      "end_ms": 500,
+      "speaker": 0,
+      "confidence": 0.95
+    },
+    {
+      "w": "clipforge",
+      "start_ms": 1000,
+      "end_ms": 1800,
+      "speaker": 0,
+      "confidence": 0.93
+    },
+    {
+      "w": "every",
+      "start_ms": 1900,
+      "end_ms": 2200,
+      "speaker": 0,
+      "confidence": 0.94
+    },
+    {
+      "w": "day",
+      "start_ms": 2300,
+      "end_ms": 2700,
+      "speaker": 0,
+      "confidence": 0.96
+    }
+  ],
+  "sentences": []
+}

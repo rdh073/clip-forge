@@ -29,8 +29,9 @@ Two of those have now landed in the working tree:
 | a      | `/clip-forge:tighten` · `bin/cf-tighten` · `bin/lib/tighten-splice.mjs` · `bin/lib/junction-analyzer.mjs` · `bin/lib/render-report.mjs` · `schemas/render_report.v1.json` | shipped at commit `e05d1ae` (2026-05-20) |
 | b      | `/clip-forge:enhance` · `bin/cf-enhance` · `tests/fixtures/noisy-speech-5s.mp4` · `tests/integration/enhance.test.mjs` · `tests/integration/enhance-render.test.mjs` | shipped at commit `eb7dd47` (2026-05-20)  |
 | c      | `/clip-forge:clip --prompt` · `bin/cf-clip` · `agents/clip-scout.md` (Prompt-based filtering section) · `tests/mocks/clip-scout-mock.mjs` · `tests/fixtures/topic-transcript-60s.json` · `tests/integration/clip-prompt.test.mjs` | shipped at commit `27626ef` (2026-05-20)  |
+| e      | `bin/cf-whisper --vocab` · `bin/lib/vocab.mjs` · `bin/lib/vocab.test.mjs` · `skills/transcribe/SKILL.md` (Brand vocabulary section) · `tests/fixtures/{mock-transcript-clipforge-3s,mock-transcript-silent-3s,sample-vocab,large-vocab}.json` · `tests/integration/vocab.test.mjs` | shipped at commit `set after rebase` (2026-05-20) |
 
-That leaves three picks for the v0.3.0 minor: **c, e, i**. The deferral
+That leaves one pick for the v0.3.0 minor: **i**. The deferral
 table in §2 is unchanged.
 
 This revision rewrites:
@@ -60,7 +61,7 @@ Legend — Complexity: S=≤300 LOC ≤2d · M=≤700 LOC ≤5d · L=≤1500 LOC
 | b | ✅ Speech enhance / denoise / loudness norm                 | Landed in working tree (commit pending, base `e05d1ae`). `/clip-forge:enhance` + `bin/cf-enhance`: `afftdn` → optional `arnndn` (pinned `cb.rnnn`) → adaptive `agate` → `dialoguenhance` → two-pass `loudnorm=I=-14:TP=-1.0:LRA=11`. Optional Demucs pre-pass. `enhanced.wav` + `enhance_report.json`; `edit.json.audio_source` patches render handoff. | —                                                                                                | S          | ~470 (shipped) | ffmpeg `loudnorm`, `afftdn`, `agate`, `dialoguenhance`; optional `arnndn` + pinned `cb.rnnn`; optional Demucs. | Shipped. Watch items: ensure final commit message + version bump + README link to skill ship together; CI fixture `noisy-speech-5s.mp4` is gitignored-safe. | v0.3.0  |
 | c | ✅ Prompt-based clipping ("ClipAnything")                   | Landed at commit `27626ef`. `/clip-forge:clip --prompt "<topic>"` + `bin/cf-clip` dispatcher + agent two-pass filter+re-rank. Zero-match returns `candidates:[]` + `warning.code:"no_match"` (honest empty, `fallback_used` stays `false`). | —                                                                                                | S          | ~270 (shipped) | None new — agent-prompt extension + `bin/cf-clip` dispatcher + `tests/mocks/clip-scout-mock.mjs` for CI.   | Shipped. Watch items: real-Agent dispatch path lives in the slash-skill markdown (cf-clip handles `--emit-brief` for production handoff); `no_scout_backend` fallback degrades gracefully when neither mock nor emit-brief is wired. | v0.3.0  |
 | d | Manual reframe / subject pin override                       | `--speaker-map` only (per-speaker static region). No per-time override.                                              | `pin_overrides.json` co-input: `[{t_start_ms,t_end_ms,cx,cy,radius?}, …]`, scorer respects it.   | M          | ~500 | None new — cf-reframe additive flag + active-speaker.mjs override hook.                                   | Schema sprawl on crop_path. Mitigation: keep override file separate; render reads only crop_path.                                              | v0.4.0  |
-| e | Brand vocabulary (custom transcription dictionary)          | None. Proper nouns mangled.                                                                                          | `~/.clip-forge/vocab.json`; Deepgram `keywords`, Whisper `--initial-prompt`, vocab-aware caption post-fixup. | S          | ~260 | Deepgram MCP `keywords` param; whisper.cpp `--prompt`; small case-restoring post-pass in `cf-whisper`.    | Whisper bias from initial-prompt is fuzzy and can hallucinate brand names into silence. Mitigation: cap prompt at 240 tokens; regression test on silent fixture; document caveat. | v0.3.0  |
+| e | ✅ Brand vocabulary (custom transcription dictionary)        | Landed at commit `set after rebase`. `~/.clip-forge/vocab.json` carries per-user brand terms; `bin/cf-whisper --vocab` plumbs them through whisper.cpp's `--prompt` and applies a case-restoring post-pass. Deepgram branch passes `buildDeepgramKeywords()` to the MCP `transcribe` tool. Hallucination guard: empty `words[]` stays empty. | —                                                                                                | S          | ~260 (shipped) | `bin/lib/vocab.mjs` (pure-logic, no deps); whisper.cpp `--prompt`; Deepgram MCP `keywords` param.        | Shipped. Watch items: per-project overlay (`./.clip-forge/vocab.json`) deferred to v0.3.1; `CF_WHISPER_TRANSCRIPT_MOCK` is the only test entry point until a TTS-driven real-audio fixture lands. | v0.3.0  |
 | f | Intro / outro stinger templates                             | `templates/intros/` is empty; `edit.json` carries `intro` / `outro` fields but renderer doesn't honor them yet.       | Ship 2–3 Remotion-rendered stinger MP4s + `cf-ffmpeg concat` step.                              | M          | ~600 | Remotion CLI (already a soft dep via thumbnails comp), node 20+, ffmpeg `concat` demuxer.                 | Remotion install footprint is large; keep CLI invocation optional, pre-render assets and ship as binary artifacts. Low leverage — most viral creators skip stingers. | v0.5.0  |
 | g | XML export (Premiere / DaVinci handoff)                     | None.                                                                                                                | FCP7 XML (`.fcpxml` v1.10) emitter or simple EDL `.edl` from `edit.json` + `tighten_plan.json`.   | L          | ~1200| FCP7 XML schema; xmlbuilder2 npm (MIT, no native).                                                        | FCP7 XML is fiddly; partial support is worse than none. Mitigation: ship `.edl` first (text format, trivial), `.fcpxml` follows.              | v0.5.0  |
 | h | Speaker diarization for multi-speaker reframe               | Deepgram diarizes; transcript carries `speaker` per word. Reframe accepts `--speaker-map` but does not auto-route timeline. | Reframe consumes per-speaker timeline; renders split-screen letterbox when ≥2 speakers active.   | M          | ~650 | Existing transcript schema; cf-reframe `--speaker-route auto`; sherpa-onnx VAD for the offline path.       | Whisper diarize quality is patchy. Mitigation: feature requires Deepgram OR opt-in `--diarize sherpa` (v0.4.0 add).                           | v0.4.0  |
@@ -505,3 +506,34 @@ the remaining v0.3.0 slices land:
   warning verbatim; `--yolo` aborts rather than broadening. Implemented
   by subagent against base `eb7dd47`; rebased onto master to land alongside
   pillar B.
+- 2026-05-20 — Pillar (e) Brand vocabulary shipped:
+  `bin/cf-whisper --vocab <path>` + `bin/lib/vocab.mjs` +
+  `tests/integration/vocab.test.mjs`. Decisions resolved:
+  * §7 Q2 (vocab.json scope) — **per-user only** for v0.3.0
+    (`~/.clip-forge/vocab.json`). Per-project overlay
+    (`./.clip-forge/vocab.json`) deferred to v0.3.1. Rationale: per-user is
+    the 90 % use case (creator's own brand kit), the overlay adds a
+    layering rule (project wins over user) that wants its own slice with
+    explicit precedence tests; pillar (e) was already at the LOC budget
+    edge and the overlay is additive on top of the lib.
+  * §5 risk row 2 (Whisper hallucination from initial-prompt bias) —
+    addressed by `buildWhisperInitialPrompt`'s 240-token cap + the
+    `applyCaseRestore` lib-level hallucination guard (empty `words[]`
+    stays empty regardless of vocab size). Both guards are exercised by
+    the silent-transcript integration test.
+  * §5 risk row 5 (Deepgram `keywords` per-request size) — addressed by
+    `buildDeepgramKeywords`'s 100-term cap + `vocab_terms_truncated`
+    soft warning (`fallback_used` stays `false`). Truncation is
+    weight-descending — surplus low-weight terms drop first.
+  * Routing — shared post-pass via `cf-whisper --apply-vocab-only` so
+    the Deepgram branch reuses the same lib code path; alternative
+    "import vocab.mjs from the skill" was rejected because skills are
+    markdown-only.
+  * Test entry point — `CF_WHISPER_TRANSCRIPT_MOCK=<path>` env hook,
+    mirroring pillar (c)'s `CF_CLIP_SCOUT_MOCK`. TTS-driven real-audio
+    fixtures explicitly out of scope; the mock-transcript JSON pattern
+    is sufficient to exercise every code path of the lib + plumbing.
+  * `bin/cf-whisper` migrated from `sh` to Node so vocab plumbing, the
+    mock hook, and the post-pass share the same lib without a
+    shell-to-Node trampoline. Canonical JSON shape, model-cache
+    behaviour, and exit semantics preserved.

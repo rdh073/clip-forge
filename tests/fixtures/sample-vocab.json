@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "terms": [
+    {
+      "term": "ClipForge",
+      "case": "preserve",
+      "weight": 1
+    },
+    {
+      "term": "Anthropic",
+      "case": "preserve",
+      "weight": 1
+    },
+    {
+      "term": "Sumayyah",
+      "case": "preserve",
+      "weight": 1,
+      "lang": "en"
+    }
+  ],
+  "deepgram": {
+    "boost": 8
+  },
+  "whisper": {
+    "initial_prompt_max_tokens": 240
+  }
+}
