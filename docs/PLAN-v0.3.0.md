@@ -1,7 +1,10 @@
-# PLAN — ClipForge v0.3.0
+# PLAN — ClipForge v0.3.0 (output-quality parity with OpusClip)
 
-**Status:** DRAFT — planning only, no code yet.
-**Author:** clip-forge core (2026-05-20).
+**Status:** REVISION 2 — pillars (a) tighten and (b) enhance landed in the
+working tree on 2026-05-20. Remaining v0.3.0 picks are (c) prompt-based
+clipping, (e) brand vocabulary, and (i) hook overlay + progress bar +
+emoji caption burn. Pillars (d), (f), (g), (h), (j) deferred.
+**Author:** clip-forge core (2026-05-20 → revised 2026-05-20).
 **Predecessor:** [docs/ROADMAP.md](ROADMAP.md), [docs/REVIEW.md](REVIEW.md),
 [docs/bench-v0.2.0.md](bench-v0.2.0.md), [CHANGELOG.md](../CHANGELOG.md).
 **Scope:** OUTPUT-QUALITY parity with OpusClip — bring the rendered MP4
@@ -10,56 +13,91 @@ explicitly out of scope. Local-first, scriptable, free, no-upload moat is
 the unchanged north star.
 
 > The existing roadmap's v0.3.0 ("license hardening + detection speed-up")
-> remains valid but is **separately tracked**. This plan adds the
-> OUTPUT-QUALITY pillar. Both slices ship under the v0.3.0 minor; the
+> remains valid and **separately tracked**. This plan adds the
+> OUTPUT-QUALITY pillar. Both slices ship under the same v0.3.0 minor; the
 > license-hardening + perf slice is mechanically smaller and lands first.
 
 ---
 
-## 1. Gap analysis — ClipForge v0.2.0 vs OpusClip (output-quality features)
+## 0. What changed since revision 1
 
-Legend — Complexity: S=≤300 LOC ≤2d · M=≤700 LOC ≤5d · L=≤1500 LOC ≤2w · XL>1500 LOC.
+Revision 1 (2026-05-20 early) selected 5 picks for v0.3.0: **a, b, c, e, i**.
+Two of those have now landed in the working tree:
 
-| # | Feature pillar                                              | ClipForge v0.2.0 today                                                                 | Opus parity gap                                                                                  | Complexity | LOC  | Dependencies                                                                                              | Risk                                                                                                                                          | Target  |
-|---|-------------------------------------------------------------|----------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------|------------|------|-----------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------|---------|
-| a | Filler-word & silence removal                               | None. Clips include "um/uh/like" + dead air.                                           | Word-timed cut plan + render that splices `select`/`concat`.                                     | M          | ~700 | ffmpeg `silencedetect`, `aselect`, `setpts`/`asetpts`, `concat`. Static filler-word list (en→i18n later). | Concat over many micro-segments can desync A/V if PTS reset is sloppy. Mitigation: render audio + video together through one filter_complex.   | v0.3.0  |
-| b | Speech enhance / denoise / loudness norm                    | None. Source audio passes through untouched.                                           | Two-pass `loudnorm` to -14 LUFS, `afftdn` or RNNoise denoise pre-loudnorm.                       | S          | ~430 | ffmpeg `loudnorm` (two-pass), `afftdn` (built-in) or `arnndn` filter + RNNoise ONNX model (CC-by, 80 KB). | RNNoise model fetch adds 80 KB to `install-models.mjs`. Skip cleanly when model missing — `afftdn` alone is a real fallback (no model needed). | v0.3.0  |
-| c | Prompt-based clipping ("ClipAnything")                      | clip-scout picks generically by virality score; no topical steering.                   | `--prompt <topic>` flag → scout filters/biases candidates to the topic.                          | S          | ~150 | None new — pure agent-prompt extension.                                                                   | Agent may over-filter and return 0 candidates. Mitigation: fall back to virality-sorted top-N with ⚠ note.                                    | v0.3.0  |
-| d | Manual reframe / subject pin override                       | `--speaker-map` only (per-speaker static region). No per-time override.                | `pin_overrides.json` co-input: `[{t_start_ms,t_end_ms,cx,cy,radius?}, …]`, scorer respects it.   | M          | ~500 | None new — cf-reframe additive flag + active-speaker.mjs override hook.                                   | Schema sprawl on crop_path. Mitigation: keep override file separate; render reads only crop_path.                                              | v0.4.0  |
-| e | Brand vocabulary (custom transcription dictionary)          | None. Proper nouns mangled.                                                            | `~/.clip-forge/vocab.json`; Deepgram `keywords`, Whisper `--initial-prompt`.                     | S          | ~200 | Deepgram MCP param; whisper.cpp `--prompt`.                                                               | Whisper bias from initial-prompt is fuzzy; can hallucinate. Mitigation: cap prompt at 240 tokens, document caveat.                            | v0.3.0  |
-| f | Intro / outro stinger templates                             | `templates/intros/` is empty; edit.json has `intro`/`outro` fields but nothing wires.  | Ship 2–3 Remotion-rendered stinger MP4s + `cf-ffmpeg concat` step.                              | M          | ~600 | Remotion CLI (already a soft dep via thumbnails comp), node 20+, ffmpeg `concat` demuxer.                 | Remotion install footprint is large; keep CLI invocation optional, pre-render assets and ship as binary artifacts.                            | v0.5.0  |
-| g | XML export (Premiere / DaVinci handoff)                     | None.                                                                                  | FCP7 XML (`.fcpxml` v1.10) emitter or simple EDL `.edl` from edit.json.                          | L          | ~1200| FCP7 XML schema; xmlbuilder2 npm (MIT, no native).                                                        | FCP7 XML is fiddly; partial support is worse than none. Mitigation: ship `.edl` first (text format, trivial), `.fcpxml` follows.              | v0.5.0  |
-| h | Speaker diarization for multi-speaker reframe               | Deepgram diarizes; transcript carries `speaker` per word. Reframe does not auto-route. | Reframe consumes per-speaker timeline; renders split-screen letterbox when ≥2 speakers active.   | M          | ~650 | Existing transcript schema; cf-reframe `--speaker-route auto`.                                            | Whisper diarize quality is patchy. Mitigation: feature requires Deepgram OR opt-in `--diarize sherpa` (v0.4.0 add).                           | v0.4.0  |
-| i | Hook overlay + progress bar + dynamic emoji captions        | Captions JSON has emoji-per-line + highlight flags but renderer doesn't burn overlays. | ASS overlay for hook text in first ≤2s; ffmpeg `drawbox` progress bar; emoji burned per line.    | M          | ~450 | ffmpeg `drawbox`, `drawtext`, ASS layers. Noto Emoji ttf (SIL OFL, 8 MB).                                 | drawtext + emoji needs fontconfig set up cross-platform. Mitigation: render emojis through ASS only (already proven path).                    | v0.3.0  |
-| j | Real OAuth publish (TikTok → YT Shorts → IG Reels)          | MCP stubs return `auth_required`.                                                      | TikTok Content Posting API, YouTube Data API v3 resumable, Instagram Graph reel container.       | L          | ~1400| TikTok developer review; Google OAuth client; FB developer app; loopback HTTP server for auth dance.      | Each platform gates on developer-program approval the maintainer has to obtain. Mitigation: implement per-platform; release as each lands.    | v0.4.0  |
+| Pillar | Skill / bin                        | Status                                       |
+|--------|------------------------------------|----------------------------------------------|
+| a      | `/clip-forge:tighten` · `bin/cf-tighten` · `bin/lib/tighten-splice.mjs` · `bin/lib/junction-analyzer.mjs` · `bin/lib/render-report.mjs` · `schemas/render_report.v1.json` | shipped at commit `e05d1ae` (2026-05-20) |
+| b      | `/clip-forge:enhance` · `bin/cf-enhance` · `tests/fixtures/noisy-speech-5s.mp4` · `tests/integration/enhance.test.mjs` · `tests/integration/enhance-render.test.mjs` | shipped in working tree, **commit pending**  |
 
-### Pillars NOT in the user's list but worth flagging
+That leaves three picks for the v0.3.0 minor: **c, e, i**. The deferral
+table in §2 is unchanged.
 
-- **A/V re-sync on cuts.** Once we cut filler words, we need a smoke test that
-  asserts audio energy aligns with mouth motion (PFLD already gives us mouth-y
-  per frame — cheap reuse).
-- **VTT/SRT sidecar export.** OpusClip emits SRT for download; we already
-  build the word timing, ~20 LOC. Bundle into pillar (b).
-- **Aspect-ratio profiles.** Beyond 9:16, OpusClip supports 1:1 and 4:5. We
-  already accept `--target-aspect` on cf-reframe but render hard-codes
-  1080×1920. ~50 LOC to plumb through edit.json. Bundle into pillar (i).
+This revision rewrites:
+- **§1 gap table** — collapses (a) and (b) into ✅ shipped rows; recomputes
+  the LOC budget for the remaining work.
+- **§2 milestone** — drops the "selection rationale" entries for shipped
+  pillars; keeps the rationale for c/e/i.
+- **§3 schema extensions** — narrows to the three pillars still to land.
+  The `edit.json.audio_source` field already ships with (b); `cuts` already
+  ships with (a). Both are now part of the v0.2.x → v0.3.0-tip baseline,
+  not a v0.3.0 add.
+- **§4 test contract** — drops the trim and enhance test entries (both
+  shipped); narrows to the three remaining positive-evidence tests.
+- **§6 LOC budget** — drops shipped totals; ~1040 LOC remaining.
+
+The decision log at §9 carries forward every prior decision verbatim.
 
 ---
 
-## 2. v0.3.0 milestone — 5 highest-leverage picks
+## 1. Gap analysis — ClipForge (master tip) vs OpusClip (output-quality)
 
-Selection criteria (in order): (1) measurable visible/audible jump in output
-quality, (2) honors the moat — local, scriptable, free, no required new SaaS
-keys, (3) complexity ≤ M (one minor slice), (4) extends the existing
-edit.json / crop_path.json / transcript.json schemas, never forks.
+Legend — Complexity: S=≤300 LOC ≤2d · M=≤700 LOC ≤5d · L=≤1500 LOC ≤2w · XL>1500 LOC.
+
+| # | Feature pillar                                              | ClipForge today (master tip + working tree)                                                                       | Opus parity gap                                                                                  | Complexity | LOC  | Dependencies                                                                                              | Risk                                                                                                                                          | Target  |
+|---|-------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------|------------|------|-----------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------|---------|
+| a | ✅ Filler-word & silence removal                            | Landed `e05d1ae`. `/clip-forge:tighten` writes `tighten_plan.json`; `cf-ffmpeg render` two-pass splices with 8 ms `acrossfade`; G1/G2/G3 junction telemetry in `render_report.json`. Locales `en` + `id` v2 (always-cut + context-only). | —                                                                                                | M          | ~810 (shipped) | ffmpeg `silencedetect`, `aselect`/`select`, `concat`, `acrossfade`, `apad`, two-pass renderer.            | Shipped. Watch items in `docs/ROADMAP.md` v0.3.1: high-N video frame-grid drift, filter-graph length warnings.                                | v0.3.0  |
+| b | ✅ Speech enhance / denoise / loudness norm                 | Landed in working tree (commit pending, base `e05d1ae`). `/clip-forge:enhance` + `bin/cf-enhance`: `afftdn` → optional `arnndn` (pinned `cb.rnnn`) → adaptive `agate` → `dialoguenhance` → two-pass `loudnorm=I=-14:TP=-1.0:LRA=11`. Optional Demucs pre-pass. `enhanced.wav` + `enhance_report.json`; `edit.json.audio_source` patches render handoff. | —                                                                                                | S          | ~470 (shipped) | ffmpeg `loudnorm`, `afftdn`, `agate`, `dialoguenhance`; optional `arnndn` + pinned `cb.rnnn`; optional Demucs. | Shipped. Watch items: ensure final commit message + version bump + README link to skill ship together; CI fixture `noisy-speech-5s.mp4` is gitignored-safe. | v0.3.0  |
+| c | Prompt-based clipping ("ClipAnything")                      | `clip-scout` picks generically by virality score; no topical steering.                                              | `--prompt <topic>` flag → scout filters/biases candidates to the topic.                          | S          | ~220 | None new — pure agent-prompt extension + skill arg threading.                                              | Agent may over-filter and return 0 candidates. Mitigation: two-pass — filter to prompt-matched, re-rank by virality within the filtered set; honest empty when zero match. | v0.3.0  |
+| d | Manual reframe / subject pin override                       | `--speaker-map` only (per-speaker static region). No per-time override.                                              | `pin_overrides.json` co-input: `[{t_start_ms,t_end_ms,cx,cy,radius?}, …]`, scorer respects it.   | M          | ~500 | None new — cf-reframe additive flag + active-speaker.mjs override hook.                                   | Schema sprawl on crop_path. Mitigation: keep override file separate; render reads only crop_path.                                              | v0.4.0  |
+| e | Brand vocabulary (custom transcription dictionary)          | None. Proper nouns mangled.                                                                                          | `~/.clip-forge/vocab.json`; Deepgram `keywords`, Whisper `--initial-prompt`, vocab-aware caption post-fixup. | S          | ~260 | Deepgram MCP `keywords` param; whisper.cpp `--prompt`; small case-restoring post-pass in `cf-whisper`.    | Whisper bias from initial-prompt is fuzzy and can hallucinate brand names into silence. Mitigation: cap prompt at 240 tokens; regression test on silent fixture; document caveat. | v0.3.0  |
+| f | Intro / outro stinger templates                             | `templates/intros/` is empty; `edit.json` carries `intro` / `outro` fields but renderer doesn't honor them yet.       | Ship 2–3 Remotion-rendered stinger MP4s + `cf-ffmpeg concat` step.                              | M          | ~600 | Remotion CLI (already a soft dep via thumbnails comp), node 20+, ffmpeg `concat` demuxer.                 | Remotion install footprint is large; keep CLI invocation optional, pre-render assets and ship as binary artifacts. Low leverage — most viral creators skip stingers. | v0.5.0  |
+| g | XML export (Premiere / DaVinci handoff)                     | None.                                                                                                                | FCP7 XML (`.fcpxml` v1.10) emitter or simple EDL `.edl` from `edit.json` + `tighten_plan.json`.   | L          | ~1200| FCP7 XML schema; xmlbuilder2 npm (MIT, no native).                                                        | FCP7 XML is fiddly; partial support is worse than none. Mitigation: ship `.edl` first (text format, trivial), `.fcpxml` follows.              | v0.5.0  |
+| h | Speaker diarization for multi-speaker reframe               | Deepgram diarizes; transcript carries `speaker` per word. Reframe accepts `--speaker-map` but does not auto-route timeline. | Reframe consumes per-speaker timeline; renders split-screen letterbox when ≥2 speakers active.   | M          | ~650 | Existing transcript schema; cf-reframe `--speaker-route auto`; sherpa-onnx VAD for the offline path.       | Whisper diarize quality is patchy. Mitigation: feature requires Deepgram OR opt-in `--diarize sherpa` (v0.4.0 add).                           | v0.4.0  |
+| i | Hook overlay + progress bar + dynamic emoji captions + aspect profiles | Captions JSON carries emoji-per-line + highlight flags but renderer doesn't burn hook overlay or progress bar. `cf-reframe` accepts `--target-aspect` but `cf-ffmpeg render` hard-codes 1080×1920. | ASS overlay for hook text in first ≤2 s; ffmpeg `drawbox` progress bar; emoji burned per line via ASS; plumb `target_aspect` through `edit.json` for 1:1 / 4:5 / 9:16. | M          | ~560 | ffmpeg `drawbox`, ASS layers. Noto Emoji ttf (SIL OFL, ~8 MB) — optional, ships only if user opts in.     | drawtext + emoji needs fontconfig set up cross-platform. Mitigation: render emojis through ASS only (already proven via Submagic-Pop template path). | v0.3.0  |
+| j | Real OAuth publish (TikTok → YT Shorts → IG Reels)          | MCP stubs (`bin/mcp/tiktok.mjs`, `youtube.mjs`, `instagram.mjs`) return `auth_required`.                              | TikTok Content Posting API, YouTube Data API v3 resumable, Instagram Graph reel container.       | L          | ~1400| TikTok developer review; Google OAuth client; FB developer app; loopback HTTP server for auth dance.      | Each platform gates on developer-program approval the maintainer has to obtain. Mitigation: implement per-platform; release as each lands.    | v0.4.0  |
+
+### Pillars NOT in the user's list but worth flagging
+
+- **A/V re-sync smoke test on cuts.** Now that pillar (a) ships filler cuts,
+  we want a smoke test that asserts audio energy aligns with mouth motion
+  (PFLD already gives us mouth-y per frame — cheap reuse). Tracked under
+  `docs/ROADMAP.md` v0.3.1.
+- **VTT/SRT sidecar export.** OpusClip emits SRT for download; we already
+  build word timing, ~30 LOC + 60 LOC test. Bundle into the (i) slice
+  since the caption-stylist artifact is open at that point.
+- **Aspect-ratio profiles.** Beyond 9:16, OpusClip supports 1:1 and 4:5.
+  `cf-reframe` already accepts `--target-aspect` but `cf-ffmpeg render`
+  hard-codes 1080×1920. ~80 LOC to plumb through `edit.json`. Folded into
+  pillar (i) as the "aspect bonus" — same code path touches the renderer
+  filter graph.
+
+---
+
+## 2. v0.3.0 remaining milestone — 3 picks
+
+Pillars (a) and (b) have landed. The remaining v0.3.0 picks are **c, e, i**.
+
+Selection criteria (unchanged from rev 1): (1) measurable visible/audible
+jump in output quality, (2) honors the moat — local, scriptable, free, no
+required new SaaS keys, (3) complexity ≤ M (one minor slice), (4) extends
+the existing `edit.json` / `crop_path.json` / `transcript.json` schemas,
+never forks.
 
 | Pick                                            | Why it wins on the moat                                                                                                                                                                                                                              |
 |-------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **a. Filler-word + silence removal**            | Single biggest perceptible-quality jump per LOC. Pure-CPU (transcript-driven cut plan + ffmpeg). No new SaaS. The viral-shorts audience is *only* watching pruned audio — shipping this alone closes ~40 % of the perceived Opus gap.                |
-| **b. Speech enhance: 2-pass loudnorm + denoise**| ffmpeg-native (`loudnorm`, `afftdn`) is free, CPU, no model needed for the loudnorm half. RNNoise model is 80 KB MIT-licensed for the denoise half — graceful-degrade-to-`afftdn` if missing. Brings clip audio to -14 LUFS social standard.         |
-| **c. Brand vocabulary (custom dictionary)**     | ~200 LOC; pure config wiring on both transcribe branches. Niche creators (founders, brand names, product names) get correct transcription for the first time. Pure cost-aware: vocab.json is the user's own data, no API key needed.                 |
-| **e. Prompt-based clipping `--prompt`**         | The cheapest of the lot (~150 LOC, pure prompt-engineering). Lifts ClipForge from "pick virality" to "find clips about X" — Opus's "ClipAnything" parity. The agent + transcript already exist; we're unlocking latent capability, not building new. |
-| **i. Hook overlay + progress bar + emoji burn** | Closes the *visual* parity gap that everyone notices first. All ffmpeg-native, no new models. The caption-stylist already emits emoji/highlight metadata — renderer just has to honor it. Bundle in 1:1 / 4:5 aspect plumbing while we're in there.  |
+| **c. Prompt-based clipping `--prompt`**         | The cheapest of the lot (~220 LOC, mostly prompt-engineering + skill wiring). Lifts ClipForge from "pick virality" to "find clips about X" — Opus's "ClipAnything" parity. The agent + transcript already exist; we're unlocking latent capability, not building new. No new SaaS keys. |
+| **e. Brand vocabulary (custom dictionary)**     | ~260 LOC; pure config wiring on both transcribe branches (Deepgram `keywords` + Whisper `--initial-prompt`). Niche creators (founders, brand names, product names) get correct transcription for the first time. vocab.json is the user's own data, no API key required. |
+| **i. Hook overlay + progress bar + emoji burn + aspect profiles** | Closes the *visual* parity gap that everyone notices first. All ffmpeg-native, no new models. The caption-stylist already emits emoji/highlight metadata — renderer just has to honor it. Bundle 1:1 / 4:5 aspect plumbing + VTT/SRT sidecar while we're touching the renderer + captions. |
 
 ### Explicitly deferred from v0.3.0
 
@@ -68,7 +106,7 @@ edit.json / crop_path.json / transcript.json schemas, never forks.
 | d. Manual reframe pin override          | v0.4.0 | Depends on a `pin_overrides.json` editor flow we haven't designed; manual override is power-user, not first-impression quality. |
 | f. Intro/outro stinger templates        | v0.5.0 | Requires shipping Remotion-rendered MP4 assets and finalizing a brand-kit story. Low leverage — most viral creators skip stingers. |
 | g. XML export                           | v0.5.0 | Large, niche audience, partial support is worse than none. Ship `.edl` (trivial) bundled with v0.5.0's pro-export slice. |
-| h. Speaker-aware reframe auto-route     | v0.4.0 | Whisper diarization quality is patchy; gate on Deepgram-only would split the user base. Ship after sherpa-onnx-VAD diarize. |
+| h. Speaker-aware reframe auto-route     | v0.4.0 | Whisper diarization quality is patchy; gating on Deepgram-only would split the user base. Ship after sherpa-onnx-VAD diarize. |
 | j. Real OAuth publish                   | v0.4.0 | Each platform gates on developer-program approval the maintainer must obtain. Per-platform release as approvals land. |
 
 ### Out-of-scope this plan (already on the v0.3.0 perf+licensing track)
@@ -77,7 +115,7 @@ edit.json / crop_path.json / transcript.json schemas, never forks.
   `docs/ROADMAP.md` v0.3.0 "Detection speedup".
 - cunjian PFLD license replacement. See `docs/ROADMAP.md` v0.3.0 "License hardening".
 - W-1 backpressure on frame extractor, W-2 numerical-correctness tests,
-  W-4/W-5 CLI ergonomics. See `docs/REVIEW.md`.
+  W-4 / W-5 / W-6 CLI ergonomics. See `docs/REVIEW.md`.
 
 These continue independently and merge into the same v0.3.0 tag.
 
@@ -85,11 +123,11 @@ These continue independently and merge into the same v0.3.0 tag.
 
 ## 3. Design — additive schema extensions only (no forks)
 
-### 3.1 `edit.json` — additive fields
+### 3.1 `edit.json` — fields after pillars (a), (b), (i)
 
 ```jsonc
 {
-  "version": 1,                       // unchanged
+  "version": 1,
   "clip_id": "c01",
   "start_ms": 252000,
   "end_ms": 298000,
@@ -103,171 +141,207 @@ These continue independently and merge into the same v0.3.0 tag.
   "output":    "./renders/<slug>/c01.mp4",
   "quality":   "high",
 
-  // v0.3.0 additions — all optional, ignored by v0.2.0 readers
-  "cuts":            "./.../cuts.json",       // pillar (a) — filler/silence cut plan
-  "audio_enhanced":  "./.../audio.norm.wav",  // pillar (b) — replaces 0:a track
-  "hook_overlay":    { "text": "Nobody tells you this", "end_ms": 1800 },  // pillar (i)
-  "progress_bar":    { "enabled": true, "color": "#ffffff", "height_px": 8 },// pillar (i)
-  "target_aspect":   "9:16"                   // pillar (i) bonus — propagate from crop_path
+  // shipped with pillar (a) + (b) — already part of baseline:
+  "cuts":         "./.../tighten_plan.json",
+  "audio_source": "./.../enhanced.wav",
+
+  // pillar (i) additions — all optional, ignored by v0.2.0 readers:
+  "hook_overlay":  { "text": "Nobody tells you this", "end_ms": 1800, "position": "upper-third" },
+  "progress_bar":  { "enabled": true, "color": "#ffffff", "height_px": 8, "position": "bottom" },
+  "target_aspect": "9:16"     // "9:16" | "1:1" | "4:5"; renderer maps to 1080×1920 | 1080×1080 | 1080×1350
 }
 ```
 
-### 3.2 New artifact: `cuts.json` (pillar a)
+### 3.2 New artifact: `~/.clip-forge/vocab.json` (pillar e)
 
 ```jsonc
 {
   "version": 1,
-  "clip_id": "c01",
-  "source_duration_ms": 46000,
-  "output_duration_ms": 39200,
-  "segments_kept": [
-    { "src_start_ms": 0,     "src_end_ms": 4280  },
-    { "src_start_ms": 4620,  "src_end_ms": 11920 }
+  "terms": [
+    { "term": "ClipForge",   "case": "preserve", "weight": 1.0 },
+    { "term": "OpusClip",    "case": "preserve", "weight": 0.8 },
+    { "term": "Anthropic",   "case": "preserve", "weight": 1.0 },
+    { "term": "Sumayyah",    "case": "preserve", "weight": 1.0, "lang": "en" }
   ],
-  "segments_cut": [
-    { "src_start_ms": 4280,  "src_end_ms": 4620,
-      "reason": "filler_word", "word": "um" },
-    { "src_start_ms": 8900,  "src_end_ms": 9540,
-      "reason": "silence",     "rms_db": -52 }
-  ],
-  "filler_dict_version": "en-v1",
-  "silence_threshold_db": -40,
-  "min_silence_ms": 600
+  "deepgram": { "boost": 8.0 },
+  "whisper":  { "initial_prompt_max_tokens": 240 }
 }
 ```
 
-### 3.3 Skill / bin / agent inventory
+- `case: "preserve"` — restore casing of the term in the transcript even if
+  the ASR engine lowercases it.
+- `weight` — caps at 1.0; the post-pass uses it to pick winners when two
+  vocab terms compete for the same span (e.g. "Anthropic" vs "anthropic").
+- `lang` — when omitted, the term is matched language-agnostically; when
+  set, the post-pass only applies casing within that language's words.
+- The whisper initial-prompt is constructed by joining `terms[].term` with
+  ", " until 240 tokens are reached (English-tokenizer heuristic; `tiktoken`
+  not required — cheap whitespace split is sufficient as a cap proxy).
+
+### 3.3 New artifact: `templates/captions/<style>.json` — hook_overlay block
+
+We add an optional `hook_overlay` block to the existing caption templates
+so the burn step can read its colours from the same place as captions:
+
+```jsonc
+{
+  // … existing Submagic-Pop fields …
+  "hook_overlay": {
+    "font_size_px": 88,
+    "stroke_px": 6,
+    "fill_primary": "$brand.primary",
+    "stroke_color": "#000000",
+    "shadow": "1px 2px rgba(0,0,0,0.6)",
+    "default_position": "upper-third",
+    "max_chars": 36
+  }
+}
+```
+
+`$brand.primary` is the existing token-substitution syntax used by
+`bin/cf-caption-burn`.
+
+### 3.4 Skill / bin / agent inventory (delta from rev 1)
 
 | Component                                     | Action       | Pillar      |
 |-----------------------------------------------|--------------|-------------|
-| `bin/cf-trim` (new)                           | create       | a           |
-| `bin/cf-audio` (new)                          | create       | b           |
-| `bin/cf-ffmpeg` (existing)                    | extend `render` to honor `cuts` + `audio_enhanced` + `hook_overlay` + `progress_bar` | a, b, i |
-| `bin/lib/filler-dict.mjs` (new, data + helper)| create       | a           |
-| `bin/lib/cuts-planner.mjs` (new)              | create       | a           |
-| `bin/lib/loudnorm.mjs` (new)                  | create       | b           |
-| `bin/cf-whisper` (existing)                   | add `--initial-prompt` plumb | c |
-| `bin/install-models.mjs` (existing)           | add optional RNNoise download | b |
-| `skills/trim/SKILL.md` (new)                  | create       | a           |
-| `skills/enhance/SKILL.md` (new)               | create       | b           |
-| `skills/transcribe/SKILL.md` (existing)       | wire `vocab.json` → both branches | c |
-| `skills/clip/SKILL.md` (existing)             | add `--prompt` arg | e   |
-| `skills/render/SKILL.md` (existing)           | document new edit.json fields | a, b, i |
-| `skills/start/SKILL.md` (existing)            | insert trim + enhance between transcribe & clip | a, b |
-| `agents/clip-scout.md` (existing)             | accept topic prompt | e     |
-| `agents/caption-stylist.md` (existing)        | mark hook span on output | i |
-| `~/.clip-forge/vocab.json` schema             | document     | c           |
-| `tests/integration/trim.test.mjs` (new)       | positive evidence (see §4) | a |
-| `tests/integration/enhance.test.mjs` (new)    | positive evidence | b   |
-| `tests/integration/vocab.test.mjs` (new)      | positive evidence | c   |
-| `tests/integration/clip-prompt.test.mjs` (new)| positive evidence | e   |
-| `tests/integration/overlay.test.mjs` (new)    | positive evidence | i   |
+| `bin/cf-ffmpeg` (existing)                    | extend `render` filter chain with `hook_overlay`, `progress_bar`, `target_aspect` | i |
+| `bin/cf-whisper` (existing)                   | add `--initial-prompt <s>` plumb + vocab-aware casing post-pass | e |
+| `bin/lib/vocab.mjs` (new)                     | create — load `vocab.json`, build Deepgram `keywords[]` + Whisper prompt, apply case-restore post-pass | e |
+| `bin/lib/overlay-builder.mjs` (new)           | create — pure builder for the ASS overlay layer + ffmpeg `drawbox` progress filter; unit-tested without ffmpeg | i |
+| `bin/mcp/deepgram.mjs` (existing, community)  | plumb `keywords` array from vocab | e |
+| `skills/transcribe/SKILL.md` (existing)       | wire `~/.clip-forge/vocab.json` → both branches | e |
+| `skills/clip/SKILL.md` (existing)             | add `--prompt <topic>` arg, two-pass filter→re-rank, honest-empty fallback | c |
+| `skills/caption/SKILL.md` (existing)          | caption-stylist emits `hook_span` + `progress_bar_color`; cf-caption-burn passes `hook_overlay` block | i |
+| `skills/render/SKILL.md` (existing)           | document new edit.json fields; document `target_aspect` mapping | i |
+| `skills/start/SKILL.md` (existing)            | thread `--prompt` through Step 4 (Detect clips) | c |
+| `agents/clip-scout.md` (existing)             | accept topic prompt — two-pass: filter to prompt-matched candidates, re-rank by virality | c |
+| `agents/caption-stylist.md` (existing)        | emit `hook_span: {start_ms, end_ms}` + `progress_bar: {color, position}` blocks | i |
+| `~/.clip-forge/vocab.json` schema             | document in README + skills/transcribe/SKILL.md | e |
+| `tests/integration/vocab.test.mjs` (new)      | positive evidence (§4.1) | e |
+| `tests/integration/clip-prompt.test.mjs` (new)| positive evidence (§4.2) | c |
+| `tests/integration/overlay.test.mjs` (new)    | positive evidence (§4.3) | i |
+| `tests/fixtures/clipforge-name-3s.mp4` (new)  | new fixture for vocab test — 3 s clip with spoken "ClipForge" | e |
+| `tests/fixtures/topic-transcript-60s.json` (new) | synthetic transcript for prompt test, no audio needed | c |
 
-### 3.4 Pipeline order in `/clip-forge:start`
+### 3.5 Pipeline order in `/clip-forge:start`
 
 ```
 1. onboard          (unchanged)
 2. import           (unchanged)
-3. transcribe       (consumes vocab.json — pillar c)
-4. enhance          ⟵ NEW (pillar b)            writes uploads/<slug>/audio.norm.wav
-5. trim             ⟵ NEW (pillar a)            writes clips/<slug>/<clip-id>/cuts.json
-6. clip             (now accepts --prompt — pillar e)
+3. transcribe       (consumes vocab.json — pillar e)            ⟵ EXTEND
+4. enhance          ✅ shipped (pillar b)                         writes uploads/<slug>/enhanced.wav
+5. tighten          ✅ shipped (pillar a)                         writes clips/<slug>/<clip-id>/tighten_plan.json
+6. clip             accepts --prompt — pillar c                  ⟵ EXTEND
 7. reframe          (unchanged)
-8. caption          (caption-stylist emits hook span — pillar i)
+8. caption          caption-stylist emits hook_span — pillar i  ⟵ EXTEND
 9. broll + music    (unchanged)
-10. render          (honors cuts + audio_enhanced + hook_overlay + progress_bar)
+10. render          honors hook_overlay + progress_bar + target_aspect — pillar i  ⟵ EXTEND
 11. publish         (unchanged stubs — v0.4.0 work)
 ```
 
-Important: **trim runs AFTER clip-scout chooses boundaries** is also valid
-and arguably faster (fewer words to scan), but running it BEFORE saves the
-scout from picking a clip whose hook is buried under "um". We will A/B both
-orderings against the success-path fixture during implementation; current
-plan defaults to the order shown above (transcribe → enhance → trim →
-clip), with the trim plan applied per-clip at render time via
-filter-graph splicing, not at source.
+Order rationale unchanged: tighten runs BEFORE clip would over-rotate the
+candidate boundaries; the shipped order (transcribe → enhance → tighten →
+clip) puts tighten AFTER clip-scout so scout sees the source word stream
+intact. The trim plan is applied per-clip at render time via filter-graph
+splicing, not at source. This is the order the shipped `cf-ffmpeg render`
+already enforces via skill-ordering invariants.
 
 ---
 
-## 4. Test contract — positive-evidence integration tests
+## 4. Test contract — positive-evidence integration tests (remaining)
 
-Following the pattern of `tests/integration/success-path.test.mjs`. Every
-test asserts the *effect*, not the *exit code*.
+Following the pattern of `tests/integration/success-path.test.mjs` and the
+already-shipped `tests/integration/enhance.test.mjs` /
+`tests/integration/tighten-render.test.mjs`. Every test asserts the
+*effect*, not the *exit code*.
 
-### 4.1 `tests/integration/trim.test.mjs` (pillar a)
+### 4.1 `tests/integration/vocab.test.mjs` (pillar e)
 
-- Fixture: a 10-second talking-head with two scripted "um" insertions and one
-  1.2 s silent gap (build via existing `tests/fixtures/build-fixtures.mjs`
-  extended).
+- Fixture: `tests/fixtures/clipforge-name-3s.mp4` — 3 s clip with the
+  spoken word "ClipForge" (mux a TTS sample + a brief carrier sentence so
+  Whisper has acoustic context). Build deterministically from
+  `tests/fixtures/build-fixtures.mjs`.
 - Assertions:
-  - `cuts.json.segments_cut.length === 3`
-  - one cut has `reason === "filler_word"` with `word === "um"`
-  - one cut has `reason === "silence"` and `(end-start) >= 600`
-  - rendered MP4 duration < source duration − 1.5 s (proves cuts applied)
-  - rendered MP4 audio waveform contains no "um" hit at the original
-    timestamps (cheap proxy: assert RMS at original-um timestamps ≤ -45 dB
-    after PTS remap)
+  - With `~/.clip-forge/vocab.json` containing `{"term":"ClipForge"}`, the
+    transcript contains `"ClipForge"` as a word (case-preserving).
+  - Without vocab, the transcript contains the misspelled form (e.g.
+    `"clip force"` or `"clip-forge"`). The contrast proves vocab is the
+    cause; not just that the word happened to land right.
+  - **Hallucination guard:** with vocab containing `"ClipForge"` AND a
+    silent fixture (`tests/fixtures/silence-3s.mp4`, separately built),
+    transcript words list is empty. Asserts the initial-prompt cap (240
+    tokens) does not bias silence into spurious brand names.
+- Skips cleanly if Deepgram key absent AND whisper.cpp absent — same
+  pattern as `tighten-reasr.test.mjs`'s skip on `CF_WHISPER_URL`.
 
-### 4.2 `tests/integration/enhance.test.mjs` (pillar b)
+### 4.2 `tests/integration/clip-prompt.test.mjs` (pillar c)
 
-- Fixture: existing 5-s talking-head; sister fixture with white-noise floor
-  mixed at -25 dBFS (built via existing fixtures script).
-- Assertions:
-  - `audio.norm.wav` exists, sample-rate 48 000, bit-depth 16
-  - measured integrated loudness via `ffmpeg -af ebur128 -f null -` is
-    -14 ± 1.0 LUFS (proves loudnorm two-pass ran with target params)
-  - noise floor RMS in the silent tail < -50 dBFS (proves denoise reduced it
-    by ≥ 25 dB)
-  - skip-on-RNNoise-missing branch still produces a valid `audio.norm.wav`
-    via `afftdn` alone, and writes `enhance.json` with `denoiser: "afftdn"`
-    so the success path is observable.
-
-### 4.3 `tests/integration/vocab.test.mjs` (pillar c)
-
-- Fixture: 3-s clip with the spoken word "ClipForge" (currently transcribed
-  as "clip force" or "clip-forge").
-- Assertions:
-  - With `vocab.json` containing `"ClipForge"`, the transcript contains
-    `"ClipForge"` as a word (case-preserving).
-  - Without vocab, transcript contains the misspelled form. (This proves
-    vocab is the cause; not just that the word happened to land right.)
-- Skips cleanly if Deepgram key absent AND whisper.cpp absent.
-
-### 4.4 `tests/integration/clip-prompt.test.mjs` (pillar e)
-
-- Fixture: synthesized 60-s transcript JSON (no audio needed) with three
-  topic blocks: "fitness", "career", "cooking".
+- Fixture: `tests/fixtures/topic-transcript-60s.json` — synthesized 60 s
+  word-timed transcript JSON (no audio needed; pure structured data) with
+  three topic blocks: "fitness" (0–20 s), "career" (20–40 s), "cooking"
+  (40–60 s). Build deterministically.
 - Assertions:
   - Without `--prompt`, candidate IDs span all three topics.
   - With `--prompt "career advice"`, returned candidates' `transcript_excerpt`
-    fields all match `/career|job|quit|salary/i`; no fitness/cooking topics.
+    fields all match `/career|job|quit|salary/i`; no fitness/cooking
+    excerpts appear in the top-N.
   - Edge: `--prompt "underwater basket weaving"` (no match) → response has
-    `candidates.length === 0` and a `warning: "no candidates matched prompt"`
-    field; success path is "honest empty" not "fall back silently".
-- Uses a mock agent stub (no real API call) so the test runs in CI.
+    `candidates.length === 0` and a top-level `warning` field
+    `{"code":"no_match","message":"no candidates matched prompt — re-run without --prompt or broaden the topic"}`.
+    Success path is "honest empty" not "fall back silently to virality
+    sort".
+- Uses a mock agent stub (`tests/mocks/clip-scout-mock.mjs`) so the test
+  runs in CI without ANTHROPIC_API_KEY. The stub honors the same I/O
+  contract documented in `agents/clip-scout.md`.
 
-### 4.5 `tests/integration/overlay.test.mjs` (pillar i)
+### 4.3 `tests/integration/overlay.test.mjs` (pillar i)
 
-- Fixture: existing 5-s talking-head.
+- Fixture: `tests/fixtures/talking-head-5s.mp4` (existing v0.2.0
+  success-path fixture).
 - Assertions:
-  - With `hook_overlay: {text:"Nobody tells you this", end_ms:1800}`:
-    sample frame at t=0.5 s contains a high-luminance horizontal band in the
-    upper third (cheap proxy: average luminance of a 20-px-tall row in the
-    upper third > +30 over baseline frame at t=4.0 s).
-  - With `progress_bar.enabled: true`: bottom 8 px row at t=2.5 s has more
-    fill than at t=0.5 s (sum of pixel luminance ratio ≥ 1.5 ×).
+  - With `hook_overlay: {text:"Nobody tells you this", end_ms:1800,
+    position:"upper-third"}`: sample frame at t=0.5 s contains a
+    high-luminance horizontal band in the upper third (cheap proxy: mean
+    luminance of a 40-px-tall row at y=600 in the 1920-tall frame > +30
+    over baseline frame at t=4.0 s after overlay end). At t=2.5 s the
+    overlay is gone, baseline luminance restored.
+  - With `progress_bar.enabled: true, height_px: 8, color: "#ffffff"`:
+    bottom 8 px row at t=2.5 s has more white fill than at t=0.5 s (sum of
+    pixel luminance ratio ≥ 1.5×).
+  - With `target_aspect: "1:1"`: rendered MP4 is 1080×1080 (ffprobe
+    `width` / `height` fields). With `target_aspect: "4:5"`: 1080×1350.
+    With `target_aspect: "9:16"` or unset: 1080×1920 (baseline).
   - Both overlays absent if not enabled (baseline frame matches v0.2.0
-    success-path render byte-for-byte sans the new filter chain).
+    success-path render byte-for-byte sans the new filter chain — assert
+    via per-stream MD5 with `CF_RENDER_DETERMINISTIC=1`).
+  - **VTT sidecar:** when `target_aspect` is unset, `cf-ffmpeg render`
+    also writes `./renders/<slug>/<clip-id>.vtt` next to the MP4 with
+    the same timing as the burned `.ass`. Assert file exists and parses
+    as valid WebVTT (first line `WEBVTT`, ≥1 cue block).
 
-### 4.6 Graceful-degradation contract (mirrors cf-reframe)
+### 4.4 Graceful-degradation contract (mirrors cf-reframe / cf-tighten / cf-enhance)
 
-Every new `bin/cf-*` script must:
+Every new `bin/cf-*` script and every new code path inside an existing
+`bin/cf-*` must:
 - Exit 0 on every documented failure path.
 - Write a valid JSON artifact recording `fallback_used: true/false` and a
   `fallback_reason` string when degraded.
-- Never break a downstream consumer — e.g. if `cf-trim` finds zero filler
-  words and zero silence segments, it still writes a `cuts.json` with
-  empty `segments_cut[]` and the renderer is unaffected.
+- Never break a downstream consumer. Examples:
+  - **Pillar (c):** if scout returns 0 candidates because of `--prompt`,
+    candidates.json carries `candidates: []` + a top-level
+    `warning: {code:"no_match", ...}`. The render skill exits early with
+    "no candidates to render" rather than crashing on a missing edit.json.
+  - **Pillar (e):** if `~/.clip-forge/vocab.json` is missing or malformed,
+    `cf-whisper` proceeds without an initial prompt and records a soft
+    `warning: {code:"vocab_unreadable", ...}` in the transcript JSON. No
+    transcription failure.
+  - **Pillar (i):** if the chosen `target_aspect` is invalid (e.g.
+    "5:4"), the renderer falls back to "9:16" and records
+    `warning: {code:"unknown_aspect", ...}` in `render_report.json`. If
+    `hook_overlay.text` overflows the safe area, the overlay-builder
+    word-wraps at the template's `max_chars` and records
+    `warning: {code:"hook_overlay_wrapped", ...}`.
 
 ---
 
@@ -275,89 +349,132 @@ Every new `bin/cf-*` script must:
 
 | Risk                                                                                                  | Mitigation                                                                                                                                                                              |
 |-------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Concatenating many micro-segments via ffmpeg `aselect`/`select`+`concat` desyncs A/V at boundaries.   | Use a single `filter_complex` graph with paired `aselect`/`select` and shared `setpts=PTS-STARTPTS` so audio and video re-clock identically. Integration test asserts duration parity.  |
-| Two-pass loudnorm doubles render time on long sources.                                                | Run enhance once on the *source* (not per clip); cache `audio.norm.wav`. Per-clip render slices the cached track.                                                                       |
-| RNNoise ONNX licence text drift on upstream CDN.                                                      | Pin a specific commit hash in `install-models.mjs`; download via raw URL with sha256 verification (real one this time — no fictional placeholder).                                      |
-| Filler-word dictionary balloons to a multilingual feature unintentionally.                            | Ship `en-v1.json` only in v0.3.0. Public schema accepts `{ lang, words[] }`; community PRs add `id-v1`, `es-v1`, etc. Mark non-English as best-effort.                                  |
-| Prompt-based clipping degrades scout's virality scoring on broad prompts.                             | Two-pass: filter to prompt-matched clips first, then re-rank by virality within the filtered set. Document the trade in `skills/clip/SKILL.md`.                                        |
-| Hook overlay text bleeds outside 9:16 safe area.                                                      | Caption-stylist already knows the platform's safe area for caption layout; reuse the same margins for hook overlay. Add a unit test on the geometry.                                    |
-| `vocab.json` initial-prompt injection on Whisper hallucinates the brand name into silence.            | Cap initial-prompt at 240 tokens. Add a regression test on a silent fixture: assert transcript words list is empty even when vocab contains "ClipForge".                                |
+| Prompt-based clipping degrades scout's virality scoring on broad prompts.                             | Two-pass: filter to prompt-matched clips first, then re-rank by virality within the filtered set. Document the trade in `skills/clip/SKILL.md`. Test 4.2 asserts the no-match warning.  |
+| `vocab.json` initial-prompt injection on Whisper hallucinates the brand name into silence.            | Cap initial-prompt at 240 tokens. Regression test on a silent fixture asserts transcript words list is empty even when vocab contains "ClipForge" (test 4.1 hallucination guard).      |
+| Hook overlay text bleeds outside 9:16 safe area.                                                      | Reuse caption-stylist's safe-area margins; template carries `max_chars`; overlay-builder word-wraps + records `hook_overlay_wrapped` warning. Geometry unit test in `bin/lib/overlay-builder.test.mjs`. |
+| `target_aspect` change between reframe (1080×1920 source samples) and render (1080×1080 target) breaks crop-expression math. | `cf-ffmpeg render` re-derives the crop dimensions from `crop_path.samples[].scale` against the *target* width/height, not hard-coded 1080×1920. The crop-expression-builder already supports this — we wire `targetW` / `targetH` from `edit.json.target_aspect` instead of literals. |
+| Deepgram `keywords` array hits per-request size limit on large vocabs.                                | `bin/lib/vocab.mjs` caps at 100 terms by `weight` descending; surplus terms recorded in transcript JSON `warnings[]` as `vocab_terms_truncated`.                                       |
+| Caption-stylist emits hook_span that overlaps the regular caption timeline.                            | `cf-caption-burn` reads hook_span from caption-stylist output but renders it on layer 1, regular captions on layer 0; ASS layer compositing handles the visual stack. Unit test in `bin/lib/overlay-builder.test.mjs`. |
+| VTT sidecar drifts from the tightened timeline (post-splice).                                          | VTT is generated from the *tightened* word list (same source as `.ass`), not the source transcript. Renderer emits both files from the same in-memory model. Test 4.3 asserts cue count parity. |
 
 ---
 
-## 6. LOC budget summary
+## 6. LOC budget (remaining)
+
+| Pick                                                       | New | Modified | Tests | Subtotal |
+|------------------------------------------------------------|-----|----------|-------|----------|
+| c. Prompt-based clipping                                    | 60  | 100      | 110   | ~270     |
+| e. Brand vocabulary                                         | 130 | 90       | 110   | ~330     |
+| i. Hook overlay + progress bar + emoji burn + aspect + VTT  | 300 | 100      | 200   | ~600     |
+| **Total remaining**                                        | **490** | **290** | **420** | **~1200 LOC** |
+
+Already shipped (for reference):
 
 | Pick                                              | New | Modified | Tests | Subtotal |
 |---------------------------------------------------|-----|----------|-------|----------|
-| a. Filler-word + silence removal                  | 480 | 110      | 220   | ~810     |
-| b. Speech enhance (loudnorm + denoise)            | 250 | 60       | 160   | ~470     |
-| c. Brand vocabulary                               | 90  | 70       | 90    | ~250     |
-| e. Prompt-based clipping                          | 0   | 110      | 110   | ~220     |
-| i. Hook overlay + progress bar + emoji + aspect   | 290 | 100      | 180   | ~570     |
-| **Total**                                         | **1110** | **450** | **760** | **~2320 LOC** |
+| a. Filler-word + silence removal (shipped)        | 480 | 110      | 220   | ~810     |
+| b. Speech enhance (shipped, commit pending)       | 250 | 60       | 160   | ~470     |
 
-Realistic shipping window: **~3 weeks of focused work**, assuming the
-v0.3.0 perf+licensing slice ships first (it's mostly already underway).
+**Grand total v0.3.0 output-quality pillar:** ~2480 LOC (~1280 shipped,
+~1200 remaining).
+
+Realistic shipping window for the remaining work: **~1.5–2 weeks of
+focused work**, assuming the v0.3.0 perf+licensing slice ships alongside.
 
 ---
 
 ## 7. Open questions for review
 
-These are decisions I want to align with the maintainer before any code
-lands. None block planning, all block implementation.
+These are decisions to align with the maintainer before any code lands.
+None block planning, all block implementation.
 
-1. **Filler-word dictionary scope.** Ship `en-v1` only, or design the
-   `{lang, words[]}` schema and ship a stub `id-v1` so Indonesian-language
-   creators (the maintainer's primary audience) aren't second-class on day
-   one? Plan above assumes English-only ship + i18n hook.
-2. **Trim ordering.** Apply trim plan (a) to *source* before clip-scout
-   sees it, or *per-clip at render time*? Plan assumes per-clip at render —
-   simpler, but means clip-scout may pick boundaries that include filler
-   words it can't see being removed. The A/B test in §3.4 decides this.
-3. **Enhance opt-out.** Default `enhance: on` or `enhance: off`? Audio
-   processing is opinionated; some podcasters already master to -16 LUFS
-   and resent re-normalization. Plan assumes default ON with
-   `--no-enhance` flag.
-4. **RNNoise model fetch behavior.** Mandatory (fail SessionStart if
-   missing) or optional (fall back to `afftdn`)? Plan above assumes
-   optional + graceful fallback — matches the existing PFLD-model story.
-5. **Hook overlay font.** Default to system font (`drawtext` falls back to
-   Liberation Sans on Linux, Helvetica on macOS) or ship a font with the
-   plugin? Plan currently leaves font selection to caption-stylist (which
-   already chose Inter for captions).
+1. **Prompt-based clipping — over-filter behavior.** If `--prompt "X"`
+   yields zero matches, do we (a) exit with `candidates: []` + warning, or
+   (b) silently fall back to virality-sorted top-N + warning? Plan above
+   chooses (a) "honest empty" — matches the `cf-tighten` contract of
+   "structured warnings, no silent fallbacks". OpusClip's UI behavior is
+   (b), but they have a screen to surface the fallback; we don't.
+2. **Vocab.json scope.** Per-user (`~/.clip-forge/vocab.json`) only, or
+   also per-project (`./.clip-forge/vocab.json` in the working directory)?
+   Per-project allows brand vocab to ride along in git. Plan currently
+   assumes both, with project overriding user, but both is more code.
+3. **Hook overlay font.** Default to system font (`drawtext` falls back to
+   Liberation Sans on Linux, Helvetica on macOS) or ship Inter ttf with
+   the plugin (~150 KB)? caption-stylist already picks Inter for captions.
+   Plan currently leaves font selection to caption-stylist (already Inter)
+   and burns through ASS, sidestepping the cross-platform fontconfig
+   issue entirely.
+4. **VTT vs SRT sidecar.** Plan picks VTT (web-native, supports styling).
+   OpusClip emits SRT. Cost of shipping both is trivial — ~20 LOC each.
+   Recommend: ship both, write SRT first (universal compatibility), VTT
+   second for stylable web embed. Open: opinion?
+5. **Aspect-ratio defaults.** When `target_aspect` is unset, render
+   defaults to 9:16. When `target_aspect: "1:1"` or `"4:5"`, the
+   reframe crop still targets the face center as before — only the output
+   canvas changes. Is that the right contract, or should 1:1 / 4:5 also
+   change the framing rules (e.g. tighter scale to keep the face larger
+   in a smaller canvas)? Plan currently says "same crop, smaller canvas".
 
 ---
 
 ## 8. Cross-cutting concerns
 
 Concerns that don't belong to a single pillar but must stay coordinated as
-the v0.3.0 slices land:
+the remaining v0.3.0 slices land:
 
-- **Caption re-timeline after apad (pillars a + i).** The tighten splice in
-  `bin/lib/tighten-splice.mjs` chains `N-1` `acrossfade=d=JUNCTION_XFADE_S`
-  filters and compensates with `apad=pad_dur=(N-1)*JUNCTION_XFADE_S` to
-  match the video length. On long clips with many junctions, the audio tail
-  drifts by ≈ N × 8 ms relative to a hypothetical "no apad, no xfade
-  consumption" baseline. Caption .ass files generated by `caption-stylist`
-  against the tightened timeline assume the splice produces a zero-drift
-  output. If caption sync ends up off by milliseconds proportional to the
-  cut count, this is the root cause — the fix lives in the caption-stylist
-  emitter, not the renderer. See the TODO marker above the `apad` call in
-  `bin/cf-ffmpeg` (`planSpliceArgs`).
+- **Caption re-timeline after apad (pillars a + i).** The tighten splice
+  in `bin/lib/tighten-splice.mjs` chains `N-1`
+  `acrossfade=d=JUNCTION_XFADE_S` filters and compensates with
+  `apad=pad_dur=(N-1)*JUNCTION_XFADE_S` to match the video length. On long
+  clips with many junctions, the audio tail drifts by ≈ N × 8 ms relative
+  to a hypothetical "no apad, no xfade consumption" baseline. Caption .ass
+  files generated by `caption-stylist` against the tightened timeline
+  assume the splice produces a zero-drift output. If caption sync ends up
+  off by milliseconds proportional to the cut count, this is the root
+  cause — the fix lives in the caption-stylist emitter, not the renderer.
+  Pillar (i) burn step inherits this constraint: hook_overlay and
+  progress_bar are clip-relative against the *post-splice* output
+  duration, not pre-splice.
 
 - **Skill ordering enforcement (pillars a + i + the deferred broll/music
   pillars).** Renderer hard-fails if `edit.json` carries `cuts` AND any of
   `broll` / `transitions` / `music`. Documented in
   `skills/tighten/SKILL.md` → "Skill ordering". When the deferred pillars
-  land, their skills must run BEFORE tighten's plan is generated so the
-  baked overlays can be cut around, or the renderer composition order must
-  be reworked to splice-then-overlay.
+  land (f intro/outro), their skills must run BEFORE tighten's plan is
+  generated so the baked overlays can be cut around, or the renderer
+  composition order must be reworked to splice-then-overlay. Pillar (i)
+  burn step runs AT render time, not pre-baked, so it composes naturally
+  with the existing two-pass splice.
 
 - **Deterministic-render env var (pillars a + tests across all pillars).**
   `CF_RENDER_DETERMINISTIC=1` forces CPU x264 + bitexact + single-threaded
-  encoding. Used by the tighten idempotency assertion and any future per-
-  stream MD5 assertions. Production renders leave it unset for speed.
-  Documented in `README.md` → "Reproducibility".
+  encoding. Used by the tighten idempotency assertion and the overlay
+  test's per-stream MD5 assertion in §4.3. Production renders leave it
+  unset for speed. Documented in `README.md` → "Reproducibility".
+
+- **Telemetry-schema extension (pillar i).** `render_report.json` schema
+  `render_report.v1` currently has no fields for overlay / aspect /
+  sidecar telemetry. Pillar (i) needs to add (without breaking schema v1
+  validation):
+  - `target_aspect: "9:16" | "1:1" | "4:5"`
+  - `overlays: { hook: { burned: bool, wrapped: bool, end_ms: int }, progress_bar: { burned: bool } }`
+  - `sidecars: { vtt: string|null, srt: string|null }`
+
+  These are additive — schema v1 allows extra keys. If we want to gate
+  them via the validator, bump to `render_report.v2` and add the fields.
+  Plan currently leaves at v1 + additive — same approach we took for the
+  tighten block.
+
+- **Vocab.json + tighten interaction (pillars e + a).** Tightened plans
+  reference transcript word indices; if vocab post-pass changes word
+  casing (e.g. "clip force" → "ClipForge"), the underlying word *index*
+  stays the same — we mutate `w` only, not `start_ms` / `end_ms` /
+  `confidence`. cf-tighten reads `w` for filler-dict matching against
+  normalized tokens (lowercased + punct-stripped), so case changes are
+  no-ops at the matcher. No test needed beyond the existing filler-match
+  unit tests.
+
+---
 
 ## 9. Decision log
 
@@ -366,3 +483,16 @@ the v0.3.0 slices land:
 - 2026-05-20 — added §8 Cross-cutting concerns (caption re-timeline TODO,
   skill ordering enforcement, deterministic-render env var) once the
   pillar-(a) splice integration landed.
+- 2026-05-20 — Pillar B (`/clip-forge:enhance`) landed in the working tree;
+  final commit SHA pending (current base `e05d1ae`). Deviations from the
+  draft: implementation uses `audio_source` instead of `audio_enhanced`;
+  `bin/cf-enhance` replaced the planned `bin/cf-audio`; the production
+  chain adds `dialoguenhance`, adaptive `agate`, and optional Demucs
+  voice isolation, none of which were in the original plan.
+- 2026-05-20 — Revision 2: collapsed shipped pillars (a) and (b) into ✅
+  rows in the gap table; narrowed §3 schema, §4 tests, §6 LOC budget to
+  the three remaining picks (c, e, i). Bundled VTT/SRT sidecar export and
+  aspect-ratio profiles (1:1, 4:5) into pillar (i) since they touch the
+  same renderer + caption code paths. Added §8 telemetry-schema extension
+  and vocab.json + tighten interaction notes. Five open questions queued
+  for maintainer review at §7.

@@ -36,7 +36,7 @@ ClipForge is closing.
 | Face-tracked reframe (9:16 / 1:1)    | ✅        | ✅       |
 | Karaoke captions w/ emoji highlight  | ✅        | ✅       |
 | **Filler-word & pause removal**      | **✅**    | ✅       |
-| Speech enhance (loudnorm + denoise)  | ❌        | ✅       |
+| Speech enhance (loudnorm + denoise)  | ✅        | ✅       |
 | Brand vocabulary (custom dictionary) | ❌        | ✅       |
 | Prompt-based clipping                | ❌        | ✅       |
 | Hook overlay + progress bar          | ❌        | ✅       |
@@ -45,6 +45,12 @@ Pillar (a) Filler-word & pause removal landed as `/clip-forge:tighten` —
 locale-aware filler dicts (en + id), silence detection, plan invariants,
 two-pass splice renderer with 8 ms acrossfade, schema-validated render
 report telemetry. See [skills/tighten/SKILL.md](skills/tighten/SKILL.md).
+
+Pillar (b) Speech enhance landed as `/clip-forge:enhance` — CPU-first
+`afftdn` denoise, optional RNNoise `arnndn`, adaptive `agate`,
+`dialoguenhance`, and two-pass `loudnorm` to -14 LUFS / -1.0 dBTP. It writes
+`enhanced.wav` plus `enhance_report.json`, then can patch `edit.json` with
+`audio_source` so render uses the cleaned WAV without touching the video.
 
 **Known characteristics:**
 - PFLD inference is ~60 ms per face on CPU. A 30-minute source at 6 fps
@@ -65,7 +71,7 @@ report telemetry. See [skills/tighten/SKILL.md](skills/tighten/SKILL.md).
 |-----------------|---------|--------------------------------------------------------|
 | Claude Code     | 2.1.128 | The CLI agent that hosts the plugin.                    |
 | Node.js         | 20      | Used by every `bin/` script and the test runner.        |
-| ffmpeg          | 6       | Required for ingest, reframe, render, music mix.        |
+| ffmpeg          | 6       | Required for ingest, enhance, reframe, render, music mix. |
 | yt-dlp          | latest  | Required for `/clip-forge:import` URL ingestion.        |
 
 The SessionStart hook checks all four on every Claude Code boot and warns if
@@ -121,7 +127,7 @@ Expected provider output is `cuda cuda`. If either provider falls back to
 git clone https://github.com/rdh073/clip-forge
 cd clip-forge
 npm install
-node bin/install-models.mjs  # one-time Ultraface + PFLD model fetch (~4 MB total)
+node bin/install-models.mjs  # one-time Ultraface + PFLD + RNNoise model fetch
 claude --plugin-dir .
 ```
 
@@ -143,6 +149,7 @@ alternative (e.g. Whisper instead of Deepgram) or is skipped with a warning.
 | `DEEPGRAM_API_KEY` | Cloud transcription | `/clip-forge:transcribe` (falls back to local Whisper) |
 | `ANTHROPIC_API_KEY` | Already set by Claude Code | clip-scout, caption-stylist |
 | `PEXELS_API_KEY` | Stock B-roll | `/clip-forge:broll` |
+| `CF_RNNOISE_MODEL_URL` | Optional custom RNNoise/arnndn model URL | `/clip-forge:enhance` model override |
 | `TIKTOK_CLIENT_KEY` + `TIKTOK_CLIENT_SECRET` | TikTok upload | `/clip-forge:publish tiktok` |
 | `YT_CLIENT_ID` + `YT_CLIENT_SECRET` | YouTube Shorts upload | `/clip-forge:publish youtube` |
 | `IG_APP_ID` + `IG_APP_SECRET` | Instagram Reels upload | `/clip-forge:publish instagram` |
@@ -174,6 +181,7 @@ Pass `--yolo` to skip every approval gate and ship 10 clips unattended:
 | `/clip-forge:onboard`      | 4-step wizard: platform, niche, brand kit, caption style |
 | `/clip-forge:import`       | Pull source from local file, YouTube/Vimeo, or Drive/Dropbox |
 | `/clip-forge:transcribe`   | Word-timed transcript via Deepgram (or local Whisper) |
+| `/clip-forge:enhance`      | Denoise, de-reverb, and loudness-normalize source audio |
 | `/clip-forge:clip`         | Calls clip-scout agent to pick up to 15 viral moments |
 | `/clip-forge:reframe`      | 16:9 → 9:16 crop path (face tracking **deferred to v0.2.0**, center-crop today) |
 | `/clip-forge:caption`      | Word-timed captions in your default style → `.ass` file |
@@ -335,6 +343,66 @@ In every case, `cf-reframe` exits 0 and writes a valid `crop_path.json` so
 | Crop pans too aggressively           | Lower `--max-pan-px-s` (default 80)                    |
 | Wrong speaker chosen                 | Pass `--speaker-map "0:left,1:right"` explicitly       |
 
+## Audio enhance
+
+`bin/cf-enhance` cleans source audio once, writes `enhanced.wav` plus
+`enhance_report.json` next to the source by default, and can patch
+`edit.json` with `"audio_source": "<enhanced.wav>"`. The renderer then keeps
+the original video stream and swaps in the cleaned WAV for audio.
+
+Default filter chain:
+
+```text
+afftdn=nr=12:nf=-25
+→ arnndn=m=bin/models/cb.rnnn      # only when model + ffmpeg arnndn exist
+→ agate                            # adaptive residual noise-floor gate
+→ dialoguenhance                   # best-effort de-reverb / speech clarity
+→ loudnorm two-pass I=-14 TP=-1.0 LRA=11
+```
+
+### Graceful degradation
+
+| Condition | Behavior |
+|---|---|
+| `bin/models/cb.rnnn` missing | Skip RNNoise, run `afftdn` + `agate` + `dialoguenhance` + `loudnorm`. |
+| ffmpeg lacks `arnndn` | Skip RNNoise and record `arnndn_filter_unavailable`. |
+| `--demucs` / `--voice-isolate` set but Demucs is missing | Skip voice isolation and record `demucs_not_installed`. |
+| Demucs fails or produces no vocals stem | Continue from the original source and record the reason. |
+| Input missing or no audio stream | Exit 0, write a valid JSON report with `fallback_used: true`. |
+| True peak cannot be verified at `<= -1.0 dBTP` | Remove unsafe output and write a fallback report. |
+
+### Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `rnnoise_model_missing` warning | Run `node bin/install-models.mjs`, or set `CF_RNNOISE_MODEL_URL` to your own `arnndn` model URL. |
+| `arnndn_filter_unavailable` | Install an ffmpeg build with the `arnndn` filter, or pass `--no-rnnoise`. |
+| `demucs_not_installed` | Install Demucs in the active Python environment, or omit `--demucs`. |
+| Output sounds over-gated | Pass `--no-noise-gate` or lower `--gate-threshold`. |
+| Loudness is not your target | Use `--target-lufs <LUFS>`; social default is `-14`. |
+| Render ignores enhanced audio | Confirm `edit.json` contains `"audio_source": "<path-to-enhanced.wav>"`. |
+
+### Common invocations
+
+```bash
+# Default CPU-first enhance next to the source:
+node bin/cf-enhance --in ./uploads/demo/source.mp4
+
+# Force afftdn-only denoise:
+node bin/cf-enhance --in ./uploads/demo/source.mp4 --no-rnnoise
+
+# Optional Demucs vocals pre-pass:
+node bin/cf-enhance --in ./uploads/demo/source.mp4 --demucs
+
+# Custom loudness target and render handoff:
+node bin/cf-enhance \
+  --in ./uploads/demo/source.mp4 \
+  --out ./uploads/demo/enhanced.wav \
+  --report ./uploads/demo/enhance_report.json \
+  --target-lufs -14 \
+  --edit-json ./clips/demo/c01/edit.json
+```
+
 ## File layout in your project
 
 ```
@@ -405,6 +473,7 @@ existing table above.
 |---|---|---|---|
 | Ultraface RFB-320 (face detection) | [Linzaer/Ultra-Light-Fast-Generic-Face-Detector](https://github.com/Linzaer/Ultra-Light-Fast-Generic-Face-Detector-1MB) via `onnx/models` | MIT | Verified clean |
 | PFLD 68-point (face landmarks) | [`cunjian/pytorch_face_landmark`](https://github.com/cunjian/pytorch_face_landmark) | **None stated** [^pfld-lic] | Replacement tracked in [`docs/ROADMAP.md`](docs/ROADMAP.md) v0.3.0 |
+| `cb.rnnn` (RNNoise / `arnndn`) | [`GregorR/rnnoise-models`](https://github.com/GregorR/rnnoise-models) | README states model files are not subject to copyright | Optional acceleration for `/clip-forge:enhance`; sha256 pinned in `bin/install-models.mjs`, override with `CF_RNNOISE_MODEL_URL` |
 
 [^pfld-lic]: The upstream PFLD model has no explicit LICENSE file. ClipForge
     fetches it directly from the upstream raw URL on every install (never
@@ -429,8 +498,8 @@ existing table above.
 git clone https://github.com/rdh073/clip-forge
 cd clip-forge
 npm install
-node bin/install-models.mjs       # one-time Ultraface + PFLD model fetch (~4 MB total)
-npm test                          # 59 tests pass, 2 skipped (fixture-gated)
+node bin/install-models.mjs       # one-time Ultraface + PFLD + RNNoise model fetch
+npm test                          # 86 tests pass, 3 skipped (fixture-gated)
 claude plugin validate .          # 0 errors, 0 warnings expected
 claude --plugin-dir .             # boot Claude Code with this plugin loaded
 ```

@@ -23,3 +23,27 @@ files are absent — so `npm test` is green on a fresh checkout even before
 you've sourced fixtures. The CI matrix runs in skip-mode too; only an
 explicit "with-fixtures" job (added when you supply fixtures) exercises
 real detection.
+
+## Audio enhancement fixture
+
+`noisy-speech-5s.mp4` is a committed synthetic fixture for
+`tests/integration/enhance.test.mjs`. It contains four seconds of a loud
+speech-like tone over stationary white noise, followed by one second of noise
+only. The final second is the deterministic noise-floor window used to assert
+that `bin/cf-enhance` produces a normalized WAV with at least 12 dB lower RMS
+noise than the input.
+
+Regenerate it with:
+
+```bash
+ffmpeg -y -hide_banner -loglevel error \
+  -f lavfi -i color=c=black:s=320x240:r=30:d=5 \
+  -f lavfi -i sine=frequency=440:duration=4:sample_rate=48000 \
+  -f lavfi -i anullsrc=r=48000:cl=mono:d=1 \
+  -f lavfi -i anoisesrc=color=white:amplitude=0.25:duration=5:sample_rate=48000 \
+  -filter_complex "[1:a][2:a]concat=n=2:v=0:a=1[tone];[tone]volume=0.8[tonev];[tonev][3:a]amix=inputs=2:duration=first:normalize=0[a]" \
+  -map 0:v -map "[a]" \
+  -c:v libx264 -preset ultrafast -crf 28 -pix_fmt yuv420p \
+  -c:a aac -b:a 128k -shortest \
+  tests/fixtures/noisy-speech-5s.mp4
+```

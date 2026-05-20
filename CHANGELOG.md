@@ -5,6 +5,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-20
+
+### Added — Pillar B audio enhance
+
+- `/clip-forge:enhance` skill + `bin/cf-enhance` audio cleanup pipeline.
+- Default CPU-first filter chain:
+  `afftdn=nr=12:nf=-25` → optional `arnndn=m=bin/models/cb.rnnn` →
+  adaptive `agate` → `dialoguenhance` → two-pass
+  `loudnorm=I=-14:TP=-1.0:LRA=11`.
+- Optional Demucs voice-isolation pre-pass via `--voice-isolate` or
+  `--demucs`. Demucs is never required; missing or failed Demucs records a
+  warning and continues from the original source.
+- `enhanced.wav` and `enhance_report.json` output next to the source by
+  default, with `integrated_loudness`, `true_peak`, `lra`, and
+  `noise_reduction_db` metrics.
+- `--edit-json <path>` patches render manifests with
+  `"audio_source": "<enhanced.wav>"`; `bin/cf-ffmpeg render` now maps that
+  audio source while preserving the original video stream.
+- Graceful-degradation contract mirrors `cf-reframe`: documented failures
+  exit 0 and write a valid JSON report with `fallback_used` and
+  `fallback_reason`.
+- RNNoise model installer support:
+  `bin/install-models.mjs` fetches `GregorR/rnnoise-models`
+  `conjoined-burgers-2018-08-28/cb.rnnn`, pins sha256
+  `f1357c4e5be9dee8467bead486dfced2d75b640c26ad0b594fa7f102322371d9`,
+  and supports `CF_RNNOISE_MODEL_URL` for caller-supplied model sources.
+
 ### Added — Filler-word & silence removal pipeline
 
 - `/clip-forge:tighten` skill + `bin/cf-tighten` plan generator

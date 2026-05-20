@@ -46,6 +46,17 @@ between minors".
 
 ## v0.3.0 — License hardening + detection speed-up
 
+### Output-quality: Pillar B shipped
+
+- **Audio enhance (`/clip-forge:enhance`).** `bin/cf-enhance` now writes a
+  normalized enhanced WAV plus `enhance_report.json` using `afftdn`,
+  optional `arnndn` with pinned `cb.rnnn`, adaptive `agate`,
+  `dialoguenhance`, and two-pass `loudnorm` to -14 LUFS / -1.0 dBTP.
+- **Render handoff.** `edit.json.audio_source` lets `bin/cf-ffmpeg render`
+  use the enhanced WAV for audio while keeping the original source for video.
+  Missing RNNoise/Demucs paths degrade gracefully and record the reason in
+  the report.
+
 ### Crop animation polish
 
 - **Revisit `ffmpeg sendcmd` on the crop filter.** Track upstream

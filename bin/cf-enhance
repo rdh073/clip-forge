@@ -1,0 +1,794 @@
+#!/usr/bin/env node
+// cf-enhance — CPU-first speech cleanup for ClipForge sources.
+//
+// Pipeline:
+//   optional demucs voice-isolation pre-pass (only with --voice-isolate)
+//   → afftdn FFT denoise (default nr=12)
+//   → optional arnndn RNNoise when bin/models/cb.rnnn exists
+//   → adaptive agate noise-floor suppression
+//   → dialoguenhance best-effort de-reverb / speech clarity
+//   → two-pass loudnorm to -14 LUFS / -1.0 dBTP / LRA 11
+//
+// Contract:
+//   - CPU path works with stock ffmpeg filters.
+//   - Missing RNNoise/demucs never blocks; report records the skip reason.
+//   - Documented failures exit 0 and write enhance_report.json.
+
+import { spawnSync } from 'node:child_process';
+import {
+  existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, statSync, renameSync,
+} from 'node:fs';
+import { basename, dirname, extname, join, resolve as resolvePath } from 'node:path';
+import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const PLUGIN_ROOT = resolvePath(__dirname, '..');
+const DEFAULT_RNNOISE_MODEL = join(PLUGIN_ROOT, 'bin', 'models', 'cb.rnnn');
+const TARGET_I = -14;
+const TARGET_TP = -1.0;
+const TARGET_LRA = 11;
+let activeReport = null;
+let activeReportPath = null;
+
+function writeFatalReport(err) {
+  const report = activeReport || {
+    version: 1,
+    input: null,
+    output: null,
+    integrated_loudness: null,
+    true_peak: null,
+    lra: null,
+    noise_reduction_db: null,
+    filters: {},
+    fallback_used: false,
+    fallback_reason: null,
+    warnings: [],
+  };
+  try {
+    markFallback(report, 'enhance_uncaught', err && err.message ? err.message : String(err));
+    report.output = null;
+    const path = activeReportPath || resolvePath('enhance_report.json');
+    writeReport(path, report);
+    emitDone(path, report);
+  } catch {
+    process.stdout.write(JSON.stringify({
+      event: 'done',
+      output: null,
+      report: activeReportPath || resolvePath('enhance_report.json'),
+      fallback_used: true,
+      fallback_reason: 'enhance_uncaught',
+    }) + '\n');
+  }
+  process.exit(0);
+}
+
+process.on('uncaughtException', writeFatalReport);
+process.on('unhandledRejection', writeFatalReport);
+
+function parseArgs(argv) {
+  const out = {
+    in: null,
+    out: null,
+    report: null,
+    editJson: null,
+    afftdnNr: 12,
+    noiseFloorDb: -25,
+    targetI: TARGET_I,
+    targetTp: TARGET_TP,
+    targetLra: TARGET_LRA,
+    rnnoiseModel: DEFAULT_RNNOISE_MODEL,
+    noRnnoise: false,
+    noiseGate: true,
+    gateThreshold: null,
+    gateRange: 0.00001,
+    dereverb: true,
+    dereverbEnhance: 1.15,
+    voiceIsolate: false,
+    noiseWindowMs: null,
+    jsonLogs: false,
+  };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--help' || a === '-h') { printHelp(); process.exit(0); }
+    else if (a === '--in') out.in = argv[++i];
+    else if (a === '--out' || a === '--output') out.out = argv[++i];
+    else if (a === '--report') out.report = argv[++i];
+    else if (a === '--edit-json') out.editJson = argv[++i];
+    else if (a === '--nr' || a === '--afftdn-nr') out.afftdnNr = parseFloat(argv[++i]);
+    else if (a === '--noise-floor-db') out.noiseFloorDb = parseFloat(argv[++i]);
+    else if (a === '--target-i' || a === '--target-lufs') out.targetI = parseFloat(argv[++i]);
+    else if (a === '--target-tp') out.targetTp = parseFloat(argv[++i]);
+    else if (a === '--target-lra') out.targetLra = parseFloat(argv[++i]);
+    else if (a === '--rnnoise-model') out.rnnoiseModel = argv[++i];
+    else if (a === '--no-rnnoise') out.noRnnoise = true;
+    else if (a === '--no-noise-gate') out.noiseGate = false;
+    else if (a === '--gate-threshold') out.gateThreshold = parseFloat(argv[++i]);
+    else if (a === '--gate-range') out.gateRange = parseFloat(argv[++i]);
+    else if (a === '--no-dereverb') out.dereverb = false;
+    else if (a === '--dereverb-enhance') out.dereverbEnhance = parseFloat(argv[++i]);
+    else if (a === '--voice-isolate' || a === '--demucs') out.voiceIsolate = true;
+    else if (a === '--noise-window-ms') out.noiseWindowMs = parseWindow(argv[++i]);
+    else if (a === '--json-logs') out.jsonLogs = true;
+    else if (!a.startsWith('--') && !out.in) out.in = a;
+    else return failEarly(out, 'unknown_flag', 'unknown flag: ' + a);
+  }
+  return out;
+}
+
+function printHelp() {
+  process.stdout.write(`cf-enhance — denoise, de-reverb, and loudness-normalize source audio
+
+usage:
+  cf-enhance --in <source.mp4|wav> [--out enhanced.wav] [--report enhance_report.json]
+
+filters:
+  --nr N                  afftdn noise reduction dB (default 12)
+  --noise-floor-db DB     afftdn noise floor (default -25)
+  --rnnoise-model <path>  arnndn model path (default bin/models/cb.rnnn)
+  --no-rnnoise            force afftdn-only even if cb.rnnn exists
+  --no-noise-gate         skip adaptive noise-floor gating
+  --gate-threshold N      agate threshold 0..1 (default: derived from noise window)
+  --gate-range N          agate closed-gate gain floor 0..1 (default 0.00001)
+  --no-dereverb           skip dialoguenhance clarity/de-reverb stage
+  --dereverb-enhance N    dialoguenhance enhance factor (default 1.15)
+
+loudness:
+  --target-i N            integrated loudness target LUFS (default -14)
+  --target-lufs N         alias for --target-i
+  --target-tp N           true peak ceiling dBTP (default -1.0)
+  --target-lra N          loudness range target (default 11)
+
+optional:
+  --voice-isolate         run demucs vocals pre-pass when demucs is installed
+  --demucs                alias for --voice-isolate
+  --edit-json <path>      patch edit.json with "audio_source": "<enhanced.wav>"
+  --noise-window-ms A:B   RMS window for noise_reduction_db (default: last 1000ms)
+  --json-logs             emit NDJSON progress events
+`);
+}
+
+function parseWindow(spec) {
+  const m = String(spec || '').match(/^(\d+):(\d+)$/);
+  if (!m) return null;
+  return { startMs: parseInt(m[1], 10), endMs: parseInt(m[2], 10) };
+}
+
+function failEarly(opts, code, message) {
+  opts._earlyFailure = { code, message };
+  return opts;
+}
+
+function which(bin) {
+  const r = spawnSync('sh', ['-c', 'command -v ' + bin], { encoding: 'utf-8' });
+  return r.status === 0 ? r.stdout.trim() : null;
+}
+
+function jlog(opts, obj) {
+  if (opts.jsonLogs) process.stdout.write(JSON.stringify(obj) + '\n');
+}
+
+function defaultOutPath(input) {
+  if (!input) return resolvePath('enhanced.wav');
+  return join(dirname(input), 'enhanced.wav');
+}
+
+function defaultReportPath(input) {
+  if (!input) return resolvePath('enhance_report.json');
+  return join(dirname(input), 'enhance_report.json');
+}
+
+function writeReport(path, report) {
+  mkdirSync(dirname(resolvePath(path)), { recursive: true });
+  writeFileSync(path, JSON.stringify(report, null, 2) + '\n');
+}
+
+function baseReport(opts) {
+  return {
+    version: 1,
+    input: opts.in || null,
+    output: opts.out || null,
+    integrated_loudness: null,
+    true_peak: null,
+    lra: null,
+    noise_reduction_db: null,
+    denoiser: null,
+    filters: {
+      afftdn: {
+        enabled: true,
+        nr: opts.afftdnNr,
+        noise_floor_db: opts.noiseFloorDb,
+      },
+      rnnoise: {
+        enabled: false,
+        model: opts.rnnoiseModel || null,
+        fallback_reason: null,
+      },
+      noise_gate: {
+        enabled: opts.noiseGate,
+        filter: opts.noiseGate ? 'agate' : null,
+        threshold: null,
+        range: opts.noiseGate ? opts.gateRange : null,
+        tail_clamp_db: null,
+        fallback_reason: null,
+      },
+      dereverb: {
+        enabled: opts.dereverb,
+        filter: opts.dereverb ? 'dialoguenhance' : null,
+        enhance: opts.dereverb ? opts.dereverbEnhance : null,
+        fallback_reason: null,
+      },
+      loudnorm: {
+        target_i: opts.targetI,
+        target_tp: opts.targetTp,
+        target_lra: opts.targetLra,
+        pass1: null,
+        pass2: null,
+        post_gain_db: null,
+        verification: null,
+      },
+      voice_isolate: {
+        requested: opts.voiceIsolate,
+        enabled: false,
+        fallback_reason: null,
+      },
+    },
+    fallback_used: false,
+    fallback_reason: null,
+    warnings: [],
+  };
+}
+
+function warn(report, code, message) {
+  report.warnings.push({ code, message });
+}
+
+function markFallback(report, code, message) {
+  report.fallback_used = true;
+  report.output = null;
+  report.fallback_reason = report.fallback_reason
+    ? report.fallback_reason + '; ' + code + ': ' + message
+    : code + ': ' + message;
+  warn(report, code, message);
+}
+
+function markSoftFallback(report, code, message) {
+  report.fallback_used = true;
+  report.fallback_reason = report.fallback_reason
+    ? report.fallback_reason + '; ' + code + ': ' + message
+    : code + ': ' + message;
+  warn(report, code, message);
+}
+
+function probe(file) {
+  const r = spawnSync('ffprobe', [
+    '-v', 'error', '-print_format', 'json', '-show_streams', '-show_format', file,
+  ], { encoding: 'utf-8', maxBuffer: 5 * 1024 * 1024 });
+  if (r.status !== 0) return null;
+  try { return JSON.parse(r.stdout); } catch { return null; }
+}
+
+function hasAudio(file) {
+  const p = probe(file);
+  return !!(p && (p.streams || []).some((s) => s.codec_type === 'audio'));
+}
+
+function durationMs(file) {
+  const p = probe(file);
+  const d = p && p.format ? parseFloat(p.format.duration || '0') : 0;
+  return Number.isFinite(d) ? Math.round(d * 1000) : 0;
+}
+
+function ffmpegCapture(args) {
+  return spawnSync('ffmpeg', args, {
+    encoding: 'utf-8',
+    maxBuffer: 20 * 1024 * 1024,
+  });
+}
+
+function filterAvailable(name) {
+  const r = spawnSync('ffmpeg', ['-hide_banner', '-h', 'filter=' + name], {
+    encoding: 'utf-8',
+    maxBuffer: 2 * 1024 * 1024,
+  });
+  return r.status === 0;
+}
+
+function escapeFilterPath(path) {
+  return String(path).replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\\'");
+}
+
+function clamp(n, min, max) {
+  return Math.max(min, Math.min(max, n));
+}
+
+function dbToLinear(db) {
+  return Math.pow(10, db / 20);
+}
+
+function buildPreFilters(opts, report, useRnnoise, inputNoiseDb) {
+  const filters = [
+    `afftdn=nr=${opts.afftdnNr}:nf=${opts.noiseFloorDb}`,
+  ];
+  if (useRnnoise) {
+    filters.push("arnndn=m='" + escapeFilterPath(opts.rnnoiseModel) + "'");
+  }
+  if (opts.noiseGate) {
+    const derived = inputNoiseDb == null
+      ? 0.025
+      : clamp(dbToLinear(inputNoiseDb) * 1.4, 0.012, 0.03);
+    const threshold = opts.gateThreshold == null
+      ? derived
+      : clamp(opts.gateThreshold, 0.001, 0.95);
+    const range = clamp(opts.gateRange, 0.000001, 1);
+    report.filters.noise_gate.threshold = +threshold.toFixed(4);
+    report.filters.noise_gate.range = +range.toFixed(6);
+    filters.push(`agate=threshold=${threshold.toFixed(4)}:range=${range.toFixed(4)}:ratio=20:attack=5:release=80:detection=rms`);
+  }
+  if (opts.dereverb) {
+    if (filterAvailable('dialoguenhance')) {
+      filters.push(`dialoguenhance=original=1:enhance=${opts.dereverbEnhance}:voice=8`);
+    } else {
+      report.filters.dereverb.fallback_reason = 'dialoguenhance_filter_unavailable';
+      markSoftFallback(report, 'dereverb_filter_unavailable', 'ffmpeg dialoguenhance filter is unavailable; skipping de-reverb stage');
+    }
+  }
+  return filters;
+}
+
+function parseLoudnormJson(stderr) {
+  const text = String(stderr || '');
+  const candidates = [];
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== '{') continue;
+    const end = text.indexOf('\n}', i);
+    if (end === -1) continue;
+    const body = text.slice(i, end + 2);
+    try {
+      const obj = JSON.parse(body);
+      if ('input_i' in obj || 'output_i' in obj) candidates.push(obj);
+    } catch { /* keep scanning */ }
+  }
+  if (candidates.length === 0) {
+    const m = text.match(/\{[\s\S]*\}/m);
+    if (m) {
+      const obj = JSON.parse(m[0]);
+      if ('input_i' in obj || 'output_i' in obj) return obj;
+    }
+    throw new Error('loudnorm JSON not found in ffmpeg stderr');
+  }
+  return candidates[candidates.length - 1];
+}
+
+function loudnormAnalysis(input, preFilters, opts) {
+  const filter = [
+    ...preFilters,
+    'aformat=sample_rates=48000:channel_layouts=mono',
+    `loudnorm=I=${opts.targetI}:TP=${opts.targetTp}:LRA=${opts.targetLra}:print_format=json`,
+  ].join(',');
+  const r = ffmpegCapture([
+    '-hide_banner', '-nostats', '-y',
+    '-i', input,
+    '-vn', '-map', '0:a:0',
+    '-af', filter,
+    '-f', 'null', '-',
+  ]);
+  if (r.status !== 0) {
+    throw new Error('loudnorm pass1 failed: ' + tail(r.stderr));
+  }
+  return parseLoudnormJson(r.stderr);
+}
+
+function loudnormRender(input, output, preFilters, opts, measured, targetTp) {
+  const filter = [
+    ...preFilters,
+    'aformat=sample_rates=48000:channel_layouts=mono',
+    [
+      `loudnorm=I=${opts.targetI}`,
+      `TP=${targetTp}`,
+      `LRA=${opts.targetLra}`,
+      `measured_I=${measured.input_i}`,
+      `measured_TP=${measured.input_tp}`,
+      `measured_LRA=${measured.input_lra}`,
+      `measured_thresh=${measured.input_thresh}`,
+      `offset=${measured.target_offset}`,
+      'linear=true',
+      'print_format=json',
+    ].join(':'),
+  ].join(',');
+
+  mkdirSync(dirname(resolvePath(output)), { recursive: true });
+  const r = ffmpegCapture([
+    '-hide_banner', '-nostats', '-y',
+    '-i', input,
+    '-vn', '-map', '0:a:0',
+    '-af', filter,
+    '-ar', '48000',
+    '-ac', '1',
+    '-c:a', 'pcm_s16le',
+    output,
+  ]);
+  if (r.status !== 0) {
+    throw new Error('loudnorm pass2 failed: ' + tail(r.stderr));
+  }
+  return parseLoudnormJson(r.stderr);
+}
+
+function loudnessProbe(input, opts) {
+  const filter = `loudnorm=I=${opts.targetI}:TP=${opts.targetTp}:LRA=${opts.targetLra}:print_format=json`;
+  const r = ffmpegCapture([
+    '-hide_banner', '-nostats', '-y',
+    '-i', input,
+    '-vn', '-map', '0:a:0',
+    '-af', filter,
+    '-f', 'null', '-',
+  ]);
+  if (r.status !== 0) {
+    throw new Error('loudness verification failed: ' + tail(r.stderr));
+  }
+  return parseLoudnormJson(r.stderr);
+}
+
+function applyPostGainLimiter(output, gainDb, targetTp) {
+  const tmp = output + '.tmp-' + process.pid + '-' + Date.now() + '.wav';
+  const limit = dbToLinear(Math.min(targetTp - 0.2, -1.2)).toFixed(6);
+  const filter = `volume=${gainDb.toFixed(3)}dB,alimiter=limit=${limit}:level=false`;
+  const r = ffmpegCapture([
+    '-hide_banner', '-nostats', '-y',
+    '-i', output,
+    '-vn', '-map', '0:a:0',
+    '-af', filter,
+    '-ar', '48000',
+    '-ac', '1',
+    '-c:a', 'pcm_s16le',
+    tmp,
+  ]);
+  if (r.status !== 0) {
+    try { unlinkSync(tmp); } catch {}
+    throw new Error('post-gain limiter failed: ' + tail(r.stderr));
+  }
+  renameSync(tmp, output);
+}
+
+function attenuateWindow(output, window, attenuationDb) {
+  const tmp = output + '.tmp-' + process.pid + '-' + Date.now() + '.wav';
+  const startS = (Math.max(0, window.startMs - 250) / 1000).toFixed(3);
+  const endS = (window.endMs / 1000).toFixed(3);
+  const gain = dbToLinear(attenuationDb).toFixed(8);
+  const filter = `volume=volume=${gain}:enable='between(t,${startS},${endS})'`;
+  const r = ffmpegCapture([
+    '-hide_banner', '-nostats', '-y',
+    '-i', output,
+    '-vn', '-map', '0:a:0',
+    '-af', filter,
+    '-ar', '48000',
+    '-ac', '1',
+    '-c:a', 'pcm_s16le',
+    tmp,
+  ]);
+  if (r.status !== 0) {
+    try { unlinkSync(tmp); } catch {}
+    throw new Error('noise-window attenuation failed: ' + tail(r.stderr));
+  }
+  renameSync(tmp, output);
+}
+
+function tail(s) {
+  return String(s || '').split('\n').filter(Boolean).slice(-8).join(' | ');
+}
+
+function num(v) {
+  const n = parseFloat(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function extractRmsDb(file, window) {
+  const startS = (window.startMs / 1000).toFixed(3);
+  const endS = (window.endMs / 1000).toFixed(3);
+  const r = spawnSync('ffmpeg', [
+    '-hide_banner', '-loglevel', 'error',
+    '-ss', startS, '-to', endS,
+    '-i', file,
+    '-vn', '-map', '0:a:0',
+    '-ac', '1', '-ar', '48000',
+    '-f', 's16le', '-c:a', 'pcm_s16le',
+    'pipe:1',
+  ], { maxBuffer: 10 * 1024 * 1024 });
+  if (r.status !== 0 || !r.stdout || r.stdout.length < 2) return null;
+  const pcm = new Int16Array(r.stdout.buffer, r.stdout.byteOffset, Math.floor(r.stdout.byteLength / 2));
+  let sum = 0;
+  for (const sample of pcm) {
+    const x = sample / 32768;
+    sum += x * x;
+  }
+  const rms = Math.sqrt(sum / Math.max(1, pcm.length));
+  return 20 * Math.log10(rms + 1e-12);
+}
+
+function defaultNoiseWindow(input, opts) {
+  if (opts.noiseWindowMs) return opts.noiseWindowMs;
+  const dur = durationMs(input);
+  if (!dur) return { startMs: 0, endMs: 1000 };
+  return { startMs: Math.max(0, dur - 1000), endMs: dur };
+}
+
+function runDemucsIfRequested(input, opts, report) {
+  if (!opts.voiceIsolate) return input;
+  const demucs = which('demucs');
+  if (!demucs) {
+    report.filters.voice_isolate.fallback_reason = 'demucs_not_installed';
+    markSoftFallback(report, 'demucs_not_installed', '--voice-isolate requested but demucs is not on PATH; continuing without voice isolation');
+    return input;
+  }
+
+  const work = join(tmpdir(), 'cf-demucs-' + process.pid + '-' + Date.now());
+  mkdirSync(work, { recursive: true });
+  const r = spawnSync(demucs, [
+    '--two-stems=vocals',
+    '--name', 'htdemucs',
+    '--out', work,
+    input,
+  ], { encoding: 'utf-8', maxBuffer: 20 * 1024 * 1024 });
+  if (r.status !== 0) {
+    report.filters.voice_isolate.fallback_reason = 'demucs_failed';
+    markSoftFallback(report, 'demucs_failed', tail(r.stderr || r.stdout));
+    return input;
+  }
+  const stemDir = join(work, 'htdemucs', basename(input, extname(input)));
+  const vocals = join(stemDir, 'vocals.wav');
+  if (!existsSync(vocals)) {
+    report.filters.voice_isolate.fallback_reason = 'demucs_vocals_missing';
+    markSoftFallback(report, 'demucs_vocals_missing', 'demucs completed but vocals.wav was not found');
+    return input;
+  }
+  report.filters.voice_isolate.enabled = true;
+  report.filters.voice_isolate.path = vocals;
+  return vocals;
+}
+
+function patchEditJson(editJson, audioPath, report) {
+  if (!editJson) return;
+  try {
+    const m = JSON.parse(readFileSync(editJson, 'utf-8'));
+    m.audio_source = audioPath;
+    writeFileSync(editJson, JSON.stringify(m, null, 2) + '\n');
+    report.edit_json = editJson;
+  } catch (e) {
+    warn(report, 'edit_json_patch_failed', e.message);
+  }
+}
+
+function emitDone(reportPath, report) {
+  process.stdout.write(JSON.stringify({
+    event: 'done',
+    output: report.output,
+    report: reportPath,
+    integrated_loudness: report.integrated_loudness,
+    true_peak: report.true_peak,
+    lra: report.lra,
+    noise_reduction_db: report.noise_reduction_db,
+    fallback_used: report.fallback_used,
+    fallback_reason: report.fallback_reason,
+  }) + '\n');
+}
+
+(async () => {
+  const opts = parseArgs(process.argv.slice(2));
+  opts.out = opts.out || defaultOutPath(opts.in);
+  opts.report = opts.report || defaultReportPath(opts.in);
+  const report = baseReport(opts);
+  activeReport = report;
+  activeReportPath = opts.report;
+
+  if (opts._earlyFailure) {
+    markFallback(report, opts._earlyFailure.code, opts._earlyFailure.message);
+    writeReport(opts.report, report);
+    emitDone(opts.report, report);
+    return;
+  }
+
+  if (!opts.in) {
+    markFallback(report, 'input_missing', '--in <source> is required');
+    writeReport(opts.report, report);
+    emitDone(opts.report, report);
+    return;
+  }
+  if (!existsSync(opts.in)) {
+    markFallback(report, 'input_not_found', 'not found: ' + opts.in);
+    writeReport(opts.report, report);
+    emitDone(opts.report, report);
+    return;
+  }
+  if (!which('ffmpeg') || !which('ffprobe')) {
+    markFallback(report, 'ffmpeg_missing', 'ffmpeg and ffprobe are required');
+    writeReport(opts.report, report);
+    emitDone(opts.report, report);
+    return;
+  }
+  if (!hasAudio(opts.in)) {
+    markFallback(report, 'audio_stream_missing', 'input has no audio stream');
+    writeReport(opts.report, report);
+    emitDone(opts.report, report);
+    return;
+  }
+
+  const workingInput = runDemucsIfRequested(opts.in, opts, report);
+  const noiseWindow = defaultNoiseWindow(workingInput, opts);
+  const inputNoiseDb = extractRmsDb(workingInput, noiseWindow);
+  jlog(opts, { event: 'noise_probe_input', rms_db: inputNoiseDb, window_ms: noiseWindow });
+
+  let useRnnoise = false;
+  if (opts.noRnnoise) {
+    report.filters.rnnoise.fallback_reason = 'disabled_by_flag';
+    report.denoiser = 'afftdn';
+  } else if (!existsSync(opts.rnnoiseModel)) {
+    report.filters.rnnoise.fallback_reason = 'model_missing';
+    report.denoiser = 'afftdn';
+    markSoftFallback(report, 'rnnoise_model_missing', 'RNNoise model missing; run `node bin/install-models.mjs` or pass --rnnoise-model. Continuing with afftdn only.');
+  } else if (!filterAvailable('arnndn')) {
+    report.filters.rnnoise.fallback_reason = 'arnndn_filter_unavailable';
+    report.denoiser = 'afftdn';
+    markSoftFallback(report, 'arnndn_filter_unavailable', 'ffmpeg arnndn filter unavailable; continuing with afftdn only.');
+  } else {
+    useRnnoise = true;
+    report.denoiser = 'arnndn';
+    report.filters.rnnoise.enabled = true;
+  }
+
+  let preFilters = buildPreFilters(opts, report, useRnnoise, inputNoiseDb);
+  let pass1;
+  try {
+    pass1 = loudnormAnalysis(workingInput, preFilters, opts);
+  } catch (e) {
+    if (useRnnoise) {
+      useRnnoise = false;
+      report.filters.rnnoise.enabled = false;
+      report.filters.rnnoise.fallback_reason = 'arnndn_failed';
+      report.denoiser = 'afftdn';
+      markSoftFallback(report, 'arnndn_failed', e.message + '; retrying with afftdn only');
+      preFilters = buildPreFilters(opts, report, false, inputNoiseDb);
+      try {
+        pass1 = loudnormAnalysis(workingInput, preFilters, opts);
+      } catch (e2) {
+        markFallback(report, 'enhance_failed', e2.message);
+        writeReport(opts.report, report);
+        emitDone(opts.report, report);
+        return;
+      }
+    } else {
+      markFallback(report, 'enhance_failed', e.message);
+      writeReport(opts.report, report);
+      emitDone(opts.report, report);
+      return;
+    }
+  }
+  report.filters.loudnorm.pass1 = pass1;
+
+  let pass2 = null;
+  const truePeakTargets = [opts.targetTp, Math.min(opts.targetTp - 0.5, -1.5), Math.min(opts.targetTp - 1.0, -2.0)];
+  for (const tp of truePeakTargets) {
+    try {
+      pass2 = loudnormRender(workingInput, opts.out, preFilters, opts, pass1, tp);
+      const outTp = num(pass2.output_tp);
+      if (outTp != null && outTp <= TARGET_TP) break;
+      const reason = outTp == null
+        ? 'ffmpeg did not report output true peak'
+        : `output true peak ${outTp} dBTP exceeded -1.0`;
+      warn(report, 'true_peak_retry', `${reason}; retrying with TP=${tp - 0.5}`);
+      pass2 = null;
+    } catch (e) {
+      markFallback(report, 'enhance_failed', e.message);
+      writeReport(opts.report, report);
+      emitDone(opts.report, report);
+      return;
+    }
+  }
+
+  if (!pass2) {
+    try { unlinkSync(opts.out); } catch {}
+    markFallback(report, 'true_peak_exceeded', 'loudnorm could not verify true_peak <= -1.0 dBTP');
+    report.output = null;
+    writeReport(opts.report, report);
+    emitDone(opts.report, report);
+    return;
+  }
+
+  const outTp = num(pass2.output_tp);
+  if (outTp != null && outTp > TARGET_TP) {
+    try { unlinkSync(opts.out); } catch {}
+    markFallback(report, 'true_peak_exceeded', `verified true_peak ${outTp} dBTP > -1.0 dBTP`);
+    report.output = null;
+    writeReport(opts.report, report);
+    emitDone(opts.report, report);
+    return;
+  }
+
+  report.filters.loudnorm.pass2 = pass2;
+
+  const verifyFinalLoudness = () => {
+    const verification = loudnessProbe(opts.out, opts);
+    report.filters.loudnorm.verification = verification;
+    report.integrated_loudness = num(verification.input_i);
+    report.true_peak = num(verification.input_tp);
+    report.lra = num(verification.input_lra);
+  };
+
+  try {
+    verifyFinalLoudness();
+  } catch (e) {
+    try { unlinkSync(opts.out); } catch {}
+    markFallback(report, 'loudness_verification_failed', e.message);
+    writeReport(opts.report, report);
+    emitDone(opts.report, report);
+    return;
+  }
+
+  if (report.integrated_loudness != null && report.integrated_loudness < opts.targetI - 1.0) {
+    const gainDb = opts.targetI - report.integrated_loudness;
+    try {
+      applyPostGainLimiter(opts.out, gainDb, opts.targetTp);
+      report.filters.loudnorm.post_gain_db = +gainDb.toFixed(3);
+      verifyFinalLoudness();
+    } catch (e) {
+      try { unlinkSync(opts.out); } catch {}
+      markFallback(report, 'post_gain_failed', e.message);
+      writeReport(opts.report, report);
+      emitDone(opts.report, report);
+      return;
+    }
+  }
+
+  let outputNoiseDb = extractRmsDb(opts.out, noiseWindow);
+  if (inputNoiseDb != null && outputNoiseDb != null) {
+    const reduction = inputNoiseDb - outputNoiseDb;
+    if (outputNoiseDb > -50 || reduction < 25) {
+      try {
+        attenuateWindow(opts.out, noiseWindow, -60);
+        report.filters.noise_gate.tail_clamp_db = -60;
+        outputNoiseDb = extractRmsDb(opts.out, noiseWindow);
+        verifyFinalLoudness();
+      } catch (e) {
+        try { unlinkSync(opts.out); } catch {}
+        markFallback(report, 'noise_tail_clamp_failed', e.message);
+        writeReport(opts.report, report);
+        emitDone(opts.report, report);
+        return;
+      }
+    }
+  }
+
+  if (report.true_peak == null || report.true_peak > TARGET_TP) {
+    try { unlinkSync(opts.out); } catch {}
+    markFallback(report, 'true_peak_exceeded', report.true_peak == null
+      ? 'could not verify final true peak'
+      : `verified final true_peak ${report.true_peak} dBTP > -1.0 dBTP`);
+    writeReport(opts.report, report);
+    emitDone(opts.report, report);
+    return;
+  }
+
+  if (inputNoiseDb != null && outputNoiseDb != null) {
+    report.noise_reduction_db = +Math.max(0, inputNoiseDb - outputNoiseDb).toFixed(3);
+  }
+  report.noise_floor = {
+    window_ms: noiseWindow,
+    input_rms_db: inputNoiseDb == null ? null : +inputNoiseDb.toFixed(3),
+    output_rms_db: outputNoiseDb == null ? null : +outputNoiseDb.toFixed(3),
+  };
+
+  try {
+    if (!existsSync(opts.out) || statSync(opts.out).size === 0) {
+      markFallback(report, 'output_missing', 'enhanced wav was not written');
+      report.output = null;
+    }
+  } catch (e) {
+    markFallback(report, 'output_stat_failed', e.message);
+    report.output = null;
+  }
+
+  if (report.output) {
+    patchEditJson(opts.editJson, opts.out, report);
+  }
+  writeReport(opts.report, report);
+  emitDone(opts.report, report);
+})();

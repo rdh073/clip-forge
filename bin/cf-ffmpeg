@@ -200,13 +200,14 @@ async function watermark(src, logo, dst) {
 //
 // Exported (via the test helper below) so unit tests can assert argv shape
 // without invoking ffmpeg.
-export function planCropArgs({ crop, source, output, startMs, endMs, captionsPath, quality }) {
+export function planCropArgs({ crop, source, output, startMs, endMs, captionsPath, quality, audioSource }) {
   const decision = chooseRenderMode(crop);
 
   const args = [];
   if (typeof startMs === 'number') args.push('-ss', (startMs / 1000).toFixed(3));
   if (typeof endMs   === 'number') args.push('-to', (endMs   / 1000).toFixed(3));
   args.push('-i', source);
+  if (audioSource) args.push('-i', audioSource);
 
   let scriptFile = null;
   if (decision.mode === 'filter-script') {
@@ -214,7 +215,7 @@ export function planCropArgs({ crop, source, output, startMs, endMs, captionsPat
     const captionTail = captionsPath ? appendCaptionsToScript(captionsPath) : '';
     writeFileSync(scriptFile, buildFilterScript(crop).replace('[v]\n', captionTail + '[v]\n'));
     args.push('-filter_complex_script', scriptFile);
-    args.push('-map', '[v]', '-map', '0:a?');
+    args.push('-map', '[v]', '-map', audioSource ? '1:a?' : '0:a?');
   } else {
     // Inline -vf path. Append caption burn-in if specified.
     let vf = decision.filterArg;
@@ -223,6 +224,7 @@ export function planCropArgs({ crop, source, output, startMs, endMs, captionsPat
       vf += ",ass='" + ascii + "'";
     }
     args.push('-vf', vf);
+    if (audioSource) args.push('-map', '0:v', '-map', '1:a?');
   }
 
   const plan = buildFfmpegPlan(args, [
@@ -263,7 +265,7 @@ function appendCaptionsToScript(captionsPath) {
 //
 // Returns `passes[]` for the renderer to execute sequentially, plus
 // `tmpFiles[]` for cleanup on completion/failure.
-export function planSpliceArgs({ crop, source, output, startMs, endMs, captionsPath, quality, tightenPlan, hasAudio, deterministic }) {
+export function planSpliceArgs({ crop, source, output, startMs, endMs, captionsPath, quality, tightenPlan, hasAudio, deterministic, audioSource }) {
   const cropDecision = chooseRenderMode(crop);
   const graph = buildSpliceGraph({
     plan: tightenPlan,
@@ -285,7 +287,7 @@ export function planSpliceArgs({ crop, source, output, startMs, endMs, captionsP
     audioTmpPath = join(tmpdir(), 'cf-tighten-audio-' + process.pid + '-' + Date.now() + '.m4a');
     tmpFiles.push(audioTmpPath);
     const audioArgs = [
-      ...seekArgs, '-i', source,
+      ...seekArgs, '-i', audioSource || source,
       '-filter_complex', graph.audioGraph,
       '-map', graph.mapAudio,
       '-c:a', 'aac', '-b:a', '192k',
@@ -369,6 +371,10 @@ async function render({ manifest }) {
   }
   if (!existsSync(source)) die('source not found: ' + source);
 
+  const audioSource = m.audio_source || (m.audio_enhancement && m.audio_enhancement.audio) || null;
+  if (audioSource && !existsSync(audioSource)) die('audio_source not found: ' + audioSource);
+  const audioInput = audioSource || source;
+
   // ADD-1: skill ordering validator. Tighten MUST run before broll, transitions,
   // and music — renderer's video concat is hard-cut; cutting across baked
   // overlays produces visible jump cuts. We block at render time rather than
@@ -407,8 +413,9 @@ async function render({ manifest }) {
       startMs: m.start_ms, endMs: m.end_ms,
       captionsPath, quality: m.quality,
       tightenPlan,
-      hasAudio: hasAudioStream(source),
+      hasAudio: hasAudioStream(audioInput),
       deterministic,
+      audioSource: audioInput,
     });
     // ADD-3: filter graph size guard (uses the larger of the two graphs).
     if (plan.filterComplex.length > GRAPH_SIZE_WARN_BYTES) {
@@ -428,6 +435,7 @@ async function render({ manifest }) {
       crop, source, output: m.output,
       startMs: m.start_ms, endMs: m.end_ms,
       captionsPath, quality: m.quality,
+      audioSource,
     });
     plan = { passes: [{ label: 'crop', ...cropPlan }], tmpFiles: cropPlan.scriptFile ? [cropPlan.scriptFile] : [], mode: cropPlan.mode, encoder: cropPlan.encoder };
     process.stdout.write(JSON.stringify({
@@ -473,12 +481,12 @@ async function render({ manifest }) {
 
     let junctions = [];
     let tightenSection = null;
-    if (useSplice && hasAudioStream(source)) {
+    if (useSplice && hasAudioStream(audioInput)) {
       const outPcmPath = join(tmpdir(), 'cf-out-pcm-' + process.pid + '-' + Date.now() + '.raw');
       const srcPcmPath = join(tmpdir(), 'cf-src-pcm-' + process.pid + '-' + Date.now() + '.raw');
       try {
         extractMonoPcm({ source: m.output, output: outPcmPath });
-        extractMonoPcm({ source, output: srcPcmPath, startMs: m.start_ms, endMs: m.end_ms });
+        extractMonoPcm({ source: audioInput, output: srcPcmPath, startMs: m.start_ms, endMs: m.end_ms });
         const outputPcm = readPcm(outPcmPath);
         const sourcePcm = readPcm(srcPcmPath);
         junctions = computeJunctionMetrics({

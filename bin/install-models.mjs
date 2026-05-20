@@ -4,6 +4,8 @@
 // v0.2.0:
 //   • bin/models/face_detector.onnx   — Ultraface RFB-320 (~1.3 MB, MIT)
 //   • bin/models/face_landmark.onnx   — PFLD 68-point (~2.9 MB, see notes)
+// v0.3.0:
+//   • bin/models/cb.rnnn              — FFmpeg arnndn speech denoise model
 //
 // Licensing notes for face_landmark.onnx:
 // We fetch the PFLD 68-point ONNX **directly from the upstream repo**
@@ -30,6 +32,8 @@ const MODELS_DIR = join(ROOT, 'bin', 'models');
 
 const PFLD_DEFAULT_URL = 'https://raw.githubusercontent.com/cunjian/pytorch_face_landmark/master/onnx/pfld.onnx';
 const PFLD_PINNED_SHA256 = '7d7bbd5c6a1d9272e58d9773898284a1905d872eba9a662df9b5f20f1ba6f83e';
+const RNNOISE_DEFAULT_URL = 'https://raw.githubusercontent.com/GregorR/rnnoise-models/refs/heads/master/conjoined-burgers-2018-08-28/cb.rnnn';
+const RNNOISE_PINNED_SHA256 = 'f1357c4e5be9dee8467bead486dfced2d75b640c26ad0b594fa7f102322371d9';
 
 const MODELS = [
   {
@@ -53,6 +57,17 @@ const MODELS = [
     notice: process.env.CF_PFLD_MODEL_URL
       ? null
       : 'Downloading PFLD landmark model from cunjian/pytorch_face_landmark.\n  License: not explicitly stated by upstream; used under fair-use research/preview\n  interpretation pending a v0.3.0 swap to a verified Apache/MIT alternative.\n  To pin your own model: set CF_PFLD_MODEL_URL=<your-url> before this script.',
+  },
+  {
+    key: 'rnnoise',
+    name: 'cb.rnnn',
+    url: process.env.CF_RNNOISE_MODEL_URL || RNNOISE_DEFAULT_URL,
+    expected_min_bytes: 250_000,
+    expected_max_bytes: 400_000,
+    license: process.env.CF_RNNOISE_MODEL_URL
+      ? '(custom URL — caller-supplied; verify license yourself)'
+      : 'GregorR/rnnoise-models README says model files are not subject to copyright; pinned sha256',
+    pinned_sha256: process.env.CF_RNNOISE_MODEL_URL ? null : RNNOISE_PINNED_SHA256,
   },
 ];
 
@@ -109,7 +124,8 @@ async function installOne(model) {
           log('⚠  ' + model.name + ' sha256 mismatch — upstream may have updated the file.');
           log('   pinned : ' + model.pinned_sha256);
           log('   got    : ' + got);
-          log('   Continuing anyway (fail-soft). If the model breaks, pin a new sha or use CF_PFLD_MODEL_URL.');
+          const envName = model.key === 'landmark' ? 'CF_PFLD_MODEL_URL' : 'CF_RNNOISE_MODEL_URL';
+          log('   Continuing anyway (fail-soft). If the model breaks, pin a new sha or use ' + envName + '.');
         }
       } catch { /* hash failure shouldn't block */ }
     }
