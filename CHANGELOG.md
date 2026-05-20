@@ -7,6 +7,111 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [0.3.0] - 2026-05-20
 
+### Added — Pillar I hook overlay + progress bar + emoji burn + aspect profiles + VTT/SRT sidecars
+
+- `edit.json.hook_overlay` (new optional field) —
+  `{text: string, end_ms: int, position: "upper-third"|"center"}`. The
+  renderer burns a separate ASS layer (layer 5) sitting above the regular
+  caption Default layer (0). Look comes from
+  `templates/captions/<style>.json.hook_overlay`; `$brand.primary` token
+  substitutes against `captions.json.brand.primary`.
+- `edit.json.progress_bar` (new optional field) —
+  `{enabled: bool, color: hex, height_px: int, position: "bottom"|"top"}`.
+  Rendered via a 20-step `drawbox` chain (ffmpeg 6.x's drawbox doesn't
+  eval `w` expressions per frame, so per-step `enable` predicates drive
+  the animation — 20 steps is smooth at 24-30 fps playback). Fill grows
+  linearly from 0 % at t=0 to 100 % at t=duration.
+- `edit.json.target_aspect` (new optional field) — `"9:16"` (default) |
+  `"1:1"` | `"4:5"`. Maps to 1080×1920 / 1080×1080 / 1080×1350 output
+  canvas dims. The renderer overrides `crop_path.target_w/h` in memory;
+  same crop CENTER, smaller canvas (see `docs/PLAN-v0.3.0.md` §7 Q5 for
+  the framing-rule trade-off). Unknown values fall back to 9:16 + soft
+  `unknown_aspect` warning.
+- `bin/lib/overlay-builder.mjs` (new, pure-logic, no deps) — four
+  builders:
+  - `chooseAspectCanvas(targetAspect)` → `{w, h, name, warning|null}`.
+  - `buildHookOverlayAss({text, end_ms, position, …})` → `{ass, warnings[]}`.
+  - `buildProgressBarDrawbox({enabled, color, heightPx, position, canvasW, canvasH, durationMs})` → `{filter, warnings[]}`.
+  - `applyEmojiHighlightToAss(captionsJson, templateBlock)` → `{ass, warnings[]}`. Replaces the inline emoji + highlight logic previously in `cf-caption-burn`.
+  All four functions: idempotent (no `Date.now`, no `Math.random`, no
+  `process.env` reads); same inputs → byte-identical output. 28 unit
+  tests in `bin/lib/overlay-builder.test.mjs`.
+- `bin/lib/srt-vtt.mjs` (new, pure-logic, no deps) — `buildVtt(captions)` +
+  `buildSrt(captions)`. Both consume the same `captions.json` schema as
+  the burned `.ass`, so the three formats stay in lockstep. 15 unit tests
+  in `bin/lib/srt-vtt.test.mjs`.
+- `bin/cf-ffmpeg render` extended to:
+  - Read the three new edit.json fields and thread them through the
+    crop expression builder (`target_aspect` → crop.target_w/h
+    override) + filter graph (`progress_bar` → 20-step drawbox chain
+    inserted before captions burn) + composed ASS file (`hook_overlay`
+    → Layer-5 dialogue spliced into a copy of `captions.ass`,
+    original never mutated).
+  - Emit `<output>.vtt` and `<output>.srt` sidecars next to the MP4
+    when `edit.json.captions_json` (or a sibling `.json` to
+    `edit.json.captions`) is set + non-empty. Best-effort: skipped
+    silently otherwise.
+  - Honor `CF_RENDER_DETERMINISTIC=1` on the non-splice (passthrough)
+    path too — previously only the splice path forced CPU + bitexact.
+    Required for the new overlay.test.mjs idempotency assertion.
+- `bin/lib/tighten-splice.mjs.buildSpliceGraph` accepts a new
+  `overlayFilter` argument — chain inserted between the concat output
+  and the captions burn step. ADDITIVE: undefined / null → identical
+  graph to v0.3.0 pillar (a). All tighten-render regression tests
+  still pass.
+- `bin/lib/render-report.mjs.buildRenderReport` writes three new
+  top-level fields: `target_aspect`, `overlays: {hook, progress_bar}`,
+  `sidecars: {vtt, srt}`. Schema `render_report.v1` extended additively
+  (existing required fields unchanged).
+- `schemas/render_report.v1.json` extended with the three new fields
+  + four new warning codes (`unknown_aspect`, `hook_overlay_wrapped`,
+  `template_missing_hook_overlay`, `progress_bar_invalid_geometry`).
+- `bin/cf-caption-burn` extended:
+  - Honors `lines[].emoji` and `lines[].words[].highlight` from
+    `captions.json` (previously these were already supported; refactored
+    onto the new `applyEmojiHighlightToAss` lib for DRY with the
+    renderer's burn step).
+  - Reads `templates/captions/<style>.json.hook_overlay` block; when
+    `captions.json.hook_span` is also present, renders the hook layer
+    inline (no separate composed-ass step needed).
+  - New `--sidecar-dir <path>` flag: when set, writes `<base>.vtt` +
+    `<base>.srt` next to the `.ass` file.
+  - New `--target-aspect <name>` flag: sets PlayResX/PlayResY in the
+    ASS header so positioning math matches the renderer's output
+    canvas. Defaults to 9:16 when unset.
+- `templates/captions/Submagic-Pop.json` + `templates/captions/Beast.json`
+  carry a `hook_overlay` block per the v0.3.0 design. Karaoke / Neon /
+  Gradient deferred to v0.3.1 — they use the default fallback
+  (white text, black stroke) at render time with a
+  `template_missing_hook_overlay` soft warning.
+- `agents/caption-stylist.md` extended: emit a `hook_span: {start_ms,
+  end_ms, text}` block in the agent's STRICT JSON output when the
+  caller's brief includes a `hook:` line. Existing output fields
+  unchanged.
+- `skills/caption/SKILL.md` documents `hook_span`, emoji + highlight
+  burning, and the new `cf-caption-burn` flags.
+- `skills/render/SKILL.md` documents aspect profiles (with the
+  same-crop-smaller-canvas framing rule), hook overlay, progress bar,
+  font handling (system-fallback only), and sidecar emission.
+- `tests/integration/overlay.test.mjs` — 11 positive-evidence
+  integration tests:
+  - hook overlay luminance band at t=0.5s vs t=4s (after end_ms=1800);
+  - progress bar bottom-row fill at t=2.5s vs t=0.5s (≥ 1.5× ratio);
+  - 1:1, 4:5, default 9:16 aspect → ffprobed canvas dims;
+  - no-overlay + CF_RENDER_DETERMINISTIC=1 → byte-identical per-stream
+    video MD5 across two runs;
+  - VTT sidecar exists + starts with WEBVTT + has cue blocks;
+  - SRT sidecar exists + has numbered blocks + comma timestamps;
+  - long hook text → render_report records `hook_overlay_wrapped`;
+  - emoji rendered vs. not → caption-region luma differs (≥ 0.01);
+  - unknown aspect "5:4" → exit 0, falls back to 9:16, records
+    `unknown_aspect` warning.
+- Graceful-degradation contract preserved across pillar (i): every
+  invalid input becomes a soft warning + sensible default, never a
+  render failure. Hard failures (ffmpeg exits non-zero) only when the
+  environment itself is broken (libass missing, drawbox unavailable,
+  unwritable output path).
+
 ### Added — Pillar E brand vocabulary
 
 - `~/.clip-forge/vocab.json` — per-user dictionary of brand / product /

@@ -25,6 +25,12 @@ import { buildFfmpegPlan } from './lib/ffmpeg-encoder.mjs';
 import { assertPlanInvariants, buildSpliceGraph, JUNCTION_XFADE_S } from './lib/tighten-splice.mjs';
 import { computeJunctionMetrics } from './lib/junction-analyzer.mjs';
 import { buildRenderReport, writeRenderReport } from './lib/render-report.mjs';
+import {
+  chooseAspectCanvas,
+  buildHookOverlayAss,
+  buildProgressBarDrawbox,
+} from './lib/overlay-builder.mjs';
+import { buildVtt, buildSrt } from './lib/srt-vtt.mjs';
 
 const GRAPH_SIZE_WARN_BYTES = 8192;
 
@@ -200,7 +206,7 @@ async function watermark(src, logo, dst) {
 //
 // Exported (via the test helper below) so unit tests can assert argv shape
 // without invoking ffmpeg.
-export function planCropArgs({ crop, source, output, startMs, endMs, captionsPath, quality, audioSource }) {
+export function planCropArgs({ crop, source, output, startMs, endMs, captionsPath, quality, audioSource, overlayFilter, deterministic }) {
   const decision = chooseRenderMode(crop);
 
   const args = [];
@@ -212,13 +218,16 @@ export function planCropArgs({ crop, source, output, startMs, endMs, captionsPat
   let scriptFile = null;
   if (decision.mode === 'filter-script') {
     scriptFile = join(tmpdir(), 'clip-forge-render-' + process.pid + '-' + Date.now() + '.fc');
+    const overlayTail = overlayFilter ? ',' + overlayFilter : '';
     const captionTail = captionsPath ? appendCaptionsToScript(captionsPath) : '';
-    writeFileSync(scriptFile, buildFilterScript(crop).replace('[v]\n', captionTail + '[v]\n'));
+    writeFileSync(scriptFile, buildFilterScript(crop).replace('[v]\n', overlayTail + captionTail + '[v]\n'));
     args.push('-filter_complex_script', scriptFile);
     args.push('-map', '[v]', '-map', audioSource ? '1:a?' : '0:a?');
   } else {
-    // Inline -vf path. Append caption burn-in if specified.
+    // Inline -vf path. Append progress-bar drawbox THEN captions burn so
+    // ASS dialogue renders on top of the bar.
     let vf = decision.filterArg;
+    if (overlayFilter) vf += ',' + overlayFilter;
     if (captionsPath && existsSync(captionsPath)) {
       const ascii = captionsPath.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\\'");
       vf += ",ass='" + ascii + "'";
@@ -227,13 +236,16 @@ export function planCropArgs({ crop, source, output, startMs, endMs, captionsPat
     if (audioSource) args.push('-map', '0:v', '-map', '1:a?');
   }
 
-  const plan = buildFfmpegPlan(args, [
-    '-c:a', 'aac', '-b:a', '192k',
-    '-movflags', '+faststart',
-    output,
-  ], {
-    cpuPreset: quality === 'fast' ? 'fast' : 'slow',
+  const tailArgs = ['-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart'];
+  if (deterministic) {
+    tailArgs.push('-fflags', '+bitexact', '-tune', 'zerolatency',
+                  '-x264-params', 'sliced-threads=0:threads=1');
+  }
+  tailArgs.push(output);
+  const plan = buildFfmpegPlan(args, tailArgs, {
+    cpuPreset: deterministic ? 'medium' : (quality === 'fast' ? 'fast' : 'slow'),
     cpuCrf: quality === 'fast' ? 22 : 18,
+    encoder: deterministic ? 'cpu' : undefined,
   });
 
   return { args: plan.args, fallbackArgs: plan.fallbackArgs, encoder: plan.encoder,
@@ -247,6 +259,92 @@ function appendCaptionsToScript(captionsPath) {
   // splice an ass=… filter just before [v].
   const ascii = captionsPath.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\\'");
   return ",ass='" + ascii + "'";
+}
+
+// Insert a Hook style + Dialogue into an existing captions.ass body without
+// mutating the on-disk original. Strategy:
+//   - Splice the style line into [V4+ Styles] after the first existing
+//     "Style: " line (the Default).
+//   - Append the dialogue line(s) at the end of [Events].
+// Falls back to building a standalone ASS body if the input is unrecognisable.
+function insertHookIntoAss(originalAss, hookAssBlock) {
+  // hookAssBlock = "Style: Hook,...\nDialogue: 5,...\n"
+  const lines = hookAssBlock.split('\n');
+  const styleLine    = lines.find((l) => l.startsWith('Style: ')) || '';
+  const dialogueLine = lines.find((l) => l.startsWith('Dialogue: ')) || '';
+
+  const body = originalAss;
+  // Insert style after the first existing "Style: Default,..." line.
+  const styleAnchor = body.indexOf('\nStyle: ');
+  let withStyle;
+  if (styleAnchor >= 0) {
+    const afterFirstStyleEnd = body.indexOf('\n', styleAnchor + 1);
+    if (afterFirstStyleEnd >= 0) {
+      withStyle = body.slice(0, afterFirstStyleEnd + 1) + styleLine + '\n' + body.slice(afterFirstStyleEnd + 1);
+    } else {
+      withStyle = body + '\n' + styleLine + '\n';
+    }
+  } else {
+    withStyle = body + '\n' + styleLine + '\n';
+  }
+  // Append dialogue at end (ensure trailing newline).
+  const withDialogue = withStyle.endsWith('\n')
+    ? withStyle + dialogueLine + '\n'
+    : withStyle + '\n' + dialogueLine + '\n';
+  return withDialogue;
+}
+
+function buildStandaloneHookAss(canvasW, canvasH, hookAssBlock) {
+  return [
+    '[Script Info]',
+    'ScriptType: v4.00+',
+    'PlayResX: ' + canvasW,
+    'PlayResY: ' + canvasH,
+    'Collisions: Normal',
+    'WrapStyle: 0',
+    'ScaledBorderAndShadow: yes',
+    '',
+    '[V4+ Styles]',
+    'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
+    hookAssBlock.split('\n').find((l) => l.startsWith('Style: ')) || '',
+    '',
+    '[Events]',
+    'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
+    hookAssBlock.split('\n').find((l) => l.startsWith('Dialogue: ')) || '',
+    '',
+  ].join('\n');
+}
+
+// Emit <output>.vtt + <output>.srt sidecars from captions.json. Best-effort:
+// skipped silently if captions_json absent or empty. Returns
+// {vtt: path|null, srt: path|null}.
+function emitSidecars({ captionsJsonPath, captionsAssPath, outputPath }) {
+  let sourcePath = null;
+  if (captionsJsonPath && existsSync(captionsJsonPath)) {
+    sourcePath = captionsJsonPath;
+  } else if (captionsAssPath) {
+    // Infer a sibling captions.json from the .ass path: captions.ass → captions.json.
+    const candidate = captionsAssPath.replace(/\.ass$/i, '.json');
+    if (candidate !== captionsAssPath && existsSync(candidate)) sourcePath = candidate;
+  }
+  if (!sourcePath) return { vtt: null, srt: null };
+
+  let captions;
+  try { captions = JSON.parse(readFileSync(sourcePath, 'utf-8')); }
+  catch { return { vtt: null, srt: null }; }
+  if (!captions || !Array.isArray(captions.lines) || captions.lines.length === 0) {
+    return { vtt: null, srt: null };
+  }
+  const base = outputPath.replace(/\.[^./\\]+$/, '');
+  const vttPath = base + '.vtt';
+  const srtPath = base + '.srt';
+  try {
+    writeFileSync(vttPath, buildVtt(captions));
+    writeFileSync(srtPath, buildSrt(captions));
+    return { vtt: vttPath, srt: srtPath };
+  } catch {
+    return { vtt: null, srt: null };
+  }
 }
 
 // Build ffmpeg passes for a combined splice + crop+scale render. Used when
@@ -265,13 +363,14 @@ function appendCaptionsToScript(captionsPath) {
 //
 // Returns `passes[]` for the renderer to execute sequentially, plus
 // `tmpFiles[]` for cleanup on completion/failure.
-export function planSpliceArgs({ crop, source, output, startMs, endMs, captionsPath, quality, tightenPlan, hasAudio, deterministic, audioSource }) {
+export function planSpliceArgs({ crop, source, output, startMs, endMs, captionsPath, quality, tightenPlan, hasAudio, deterministic, audioSource, overlayFilter }) {
   const cropDecision = chooseRenderMode(crop);
   const graph = buildSpliceGraph({
     plan: tightenPlan,
     cropFilterArg: cropDecision.filterArg,
     captionsPath,
     hasAudio,
+    overlayFilter,
   });
 
   const seekArgs = [];
@@ -401,7 +500,103 @@ async function render({ manifest }) {
   const crop = JSON.parse(readFileSync(m.crop_path, 'utf-8'));
   mkdirSync(dirname(m.output), { recursive: true });
 
-  const captionsPath = m.captions && existsSync(m.captions) ? m.captions : null;
+  // ----- Pillar (i) v0.3.0: aspect profile + overlays + sidecars -----
+  const renderWarnings = [];
+  const canvas = chooseAspectCanvas(m.target_aspect);
+  if (canvas.warning) renderWarnings.push(canvas.warning);
+  // Override crop.target_w / target_h so the crop+scale chain produces the
+  // chosen canvas dims. Reframe stage stays aspect-agnostic; same crop
+  // center, smaller canvas. See docs/PLAN-v0.3.0.md §7 Q5.
+  crop.target_w = canvas.w;
+  crop.target_h = canvas.h;
+
+  // Hook overlay — compose <output>.composed.ass next to captions, never
+  // mutate the original captions.ass on disk. Layer 5 sits above the
+  // Default caption layer (0).
+  const tmpComposedAss = [];
+  let captionsPath = m.captions && existsSync(m.captions) ? m.captions : null;
+  const overlayTelemetry = { hook: null, progress_bar: null };
+  if (captionsPath && m.hook_overlay && m.hook_overlay.text) {
+    const composed = join(tmpdir(), 'cf-composed-ass-' + process.pid + '-' + Date.now() + '.ass');
+    const original = readFileSync(captionsPath, 'utf-8');
+    const hook = buildHookOverlayAss({
+      text:        m.hook_overlay.text,
+      end_ms:      m.hook_overlay.end_ms ?? 1800,
+      position:    m.hook_overlay.position,
+      fontSize:    m.hook_overlay.font_size_px,
+      fillPrimary: m.hook_overlay.fill_primary,
+      strokeColor: m.hook_overlay.stroke_color,
+      strokePx:    m.hook_overlay.stroke_px,
+      shadow:      m.hook_overlay.shadow_px,
+      safeAreaPx:  m.hook_overlay.safe_area_px,
+      maxChars:    m.hook_overlay.max_chars,
+      canvasW:     canvas.w,
+      canvasH:     canvas.h,
+    });
+    for (const w of hook.warnings) renderWarnings.push(w);
+    // Splice the Hook style line into [V4+ Styles] (after the existing
+    // Style: Default line) and append the Dialogue line to [Events].
+    const composedBody = insertHookIntoAss(original, hook.ass);
+    writeFileSync(composed, composedBody);
+    tmpComposedAss.push(composed);
+    captionsPath = composed;
+    overlayTelemetry.hook = {
+      burned: true,
+      wrapped: hook.warnings.some((w) => w.code === 'hook_overlay_wrapped'),
+      end_ms: m.hook_overlay.end_ms ?? 1800,
+    };
+  } else if (m.hook_overlay && m.hook_overlay.text && !captionsPath) {
+    // Hook requested but no captions.ass on disk — burn a standalone ASS.
+    const composed = join(tmpdir(), 'cf-hook-only-' + process.pid + '-' + Date.now() + '.ass');
+    const hook = buildHookOverlayAss({
+      text: m.hook_overlay.text,
+      end_ms: m.hook_overlay.end_ms ?? 1800,
+      position: m.hook_overlay.position,
+      fontSize: m.hook_overlay.font_size_px,
+      fillPrimary: m.hook_overlay.fill_primary,
+      strokeColor: m.hook_overlay.stroke_color,
+      strokePx: m.hook_overlay.stroke_px,
+      shadow: m.hook_overlay.shadow_px,
+      safeAreaPx: m.hook_overlay.safe_area_px,
+      maxChars: m.hook_overlay.max_chars,
+      canvasW: canvas.w,
+      canvasH: canvas.h,
+    });
+    for (const w of hook.warnings) renderWarnings.push(w);
+    writeFileSync(composed, buildStandaloneHookAss(canvas.w, canvas.h, hook.ass));
+    tmpComposedAss.push(composed);
+    captionsPath = composed;
+    overlayTelemetry.hook = {
+      burned: true,
+      wrapped: hook.warnings.some((w) => w.code === 'hook_overlay_wrapped'),
+      end_ms: m.hook_overlay.end_ms ?? 1800,
+    };
+  }
+
+  // Progress bar — drawbox filter expression, composed into the filter graph.
+  let overlayFilter = null;
+  const totalMs = (m.end_ms - m.start_ms);
+  if (m.progress_bar && m.progress_bar.enabled) {
+    const pb = buildProgressBarDrawbox({
+      enabled:    true,
+      color:      m.progress_bar.color,
+      heightPx:   m.progress_bar.height_px,
+      position:   m.progress_bar.position,
+      canvasW:    canvas.w,
+      canvasH:    canvas.h,
+      durationMs: totalMs,
+    });
+    for (const w of pb.warnings) renderWarnings.push(w);
+    if (pb.filter) {
+      overlayFilter = pb.filter;
+      overlayTelemetry.progress_bar = {
+        burned:    true,
+        color:     m.progress_bar.color ?? '#ffffff',
+        height_px: m.progress_bar.height_px ?? 8,
+        position:  m.progress_bar.position === 'top' ? 'top' : 'bottom',
+      };
+    }
+  }
   const deterministic = process.env.CF_RENDER_DETERMINISTIC === '1';
   const useSplice = tightenPlan && (tightenPlan.kept_segments || []).length >= 1
                                  && (tightenPlan.cuts || []).length >= 1;
@@ -416,6 +611,7 @@ async function render({ manifest }) {
       hasAudio: hasAudioStream(audioInput),
       deterministic,
       audioSource: audioInput,
+      overlayFilter,
     });
     // ADD-3: filter graph size guard (uses the larger of the two graphs).
     if (plan.filterComplex.length > GRAPH_SIZE_WARN_BYTES) {
@@ -436,6 +632,8 @@ async function render({ manifest }) {
       startMs: m.start_ms, endMs: m.end_ms,
       captionsPath, quality: m.quality,
       audioSource,
+      overlayFilter,
+      deterministic,
     });
     plan = { passes: [{ label: 'crop', ...cropPlan }], tmpFiles: cropPlan.scriptFile ? [cropPlan.scriptFile] : [], mode: cropPlan.mode, encoder: cropPlan.encoder };
     process.stdout.write(JSON.stringify({
@@ -468,10 +666,16 @@ async function render({ manifest }) {
       die('render: produced zero-byte output (no file left on disk)');
     }
 
+    // ----- emit VTT + SRT sidecars (pillar (i) — best-effort) -----
+    const sidecars = emitSidecars({
+      captionsJsonPath: m.captions_json,
+      captionsAssPath:  m.captions,
+      outputPath:       m.output,
+    });
+
     // ----- emit render_report.json -----
     const reportPath = join(dirname(m.output), 'render_report.json');
     const renderMode = useSplice ? 'splice' : 'passthrough';
-    const renderWarnings = [];
     if (useSplice && plan.filterComplex.length > GRAPH_SIZE_WARN_BYTES) {
       renderWarnings.push({
         code: 'filter_graph_length_near_limit',
@@ -554,12 +758,16 @@ async function render({ manifest }) {
       tighten: tightenSection,
       junctions,
       warnings: renderWarnings,
+      targetAspect: canvas.name,
+      overlays: (overlayTelemetry.hook || overlayTelemetry.progress_bar) ? overlayTelemetry : null,
+      sidecars,
     });
     writeRenderReport(report, reportPath);
 
     process.stdout.write(JSON.stringify({ event: 'done', path: m.output, report_path: reportPath }) + '\n');
   } finally {
     for (const f of (plan.tmpFiles || [])) { try { unlinkSync(f); } catch {} }
+    for (const f of tmpComposedAss)        { try { unlinkSync(f); } catch {} }
   }
 }
 

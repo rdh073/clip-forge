@@ -78,3 +78,140 @@ Stream ffmpeg progress (read stderr `time=` lines, emit `⏳ 47%`).
 - Missing required input → ❌ name the file.
 - ffmpeg non-zero → tail the last 30 lines of stderr, surface it, ❌.
 - Out of disk → check `df` for the target dir before encoding; abort early.
+
+---
+
+## Pillar (i) v0.3.0 additions
+
+The fields below are all optional. v0.2.x edit.json files render
+identically — every overlay/aspect/sidecar field defaults off.
+
+### `edit.json` extended schema
+
+```json
+{
+  "version": 1, "clip_id": "c01",
+  "start_ms": 0, "end_ms": 5000,
+  "source": "./uploads/<slug>/source.mp4",
+  "crop_path": "./.../crop_path.json",
+  "captions":      "./.../captions.ass",
+  "captions_json": "./.../captions.json",
+  "output": "./renders/<slug>/c01.mp4",
+  "quality": "high",
+
+  "target_aspect": "9:16",
+  "hook_overlay":  {
+    "text": "Nobody tells you this",
+    "end_ms": 1800,
+    "position": "upper-third"
+  },
+  "progress_bar":  {
+    "enabled": true,
+    "color": "#ffffff",
+    "height_px": 8,
+    "position": "bottom"
+  }
+}
+```
+
+### Aspect profiles
+
+`target_aspect` maps to output canvas dimensions:
+
+| value | canvas       |
+|-------|--------------|
+| `9:16` (default) | 1080 × 1920 |
+| `1:1`            | 1080 × 1080 |
+| `4:5`            | 1080 × 1350 |
+
+Unknown values fall back to 9:16 + a soft `unknown_aspect` warning in
+`render_report.json`.
+
+**Framing rule — "same crop, smaller canvas".** The reframe stage stays
+aspect-agnostic. The face-tracked crop CENTER (`crop_path.samples[].cx/cy`)
+is unchanged when you switch aspects; only the output canvas dimensions
+shrink. Trade-off: when you ship a 4:5 of a clip reframed at 9:16, the
+subject sits in the same relative position but more head/shoulder space
+is reserved. If you want tighter framing per-aspect, override at reframe
+time:
+
+```bash
+cf-reframe ./source.mp4 --output ./crop_path.json --target-aspect 1:1
+```
+
+### Hook overlay
+
+A bold text overlay rendered via a separate ASS layer (layer 5) sitting
+above the caption Default layer (layer 0). Visible for `[0, end_ms]`.
+Position values: `"upper-third"` (default) → ASS alignment 8 with
+MarginV ≈ canvasH/3; `"center"` → ASS alignment 5.
+
+Look comes from `templates/captions/<style>.json` → `hook_overlay`
+block:
+
+```json
+{
+  "hook_overlay": {
+    "font_size_px": 88,
+    "stroke_px": 6,
+    "fill_primary": "$brand.primary",
+    "stroke_color": "#000000",
+    "shadow_px": 2,
+    "default_position": "upper-third",
+    "max_chars": 36
+  }
+}
+```
+
+`$brand.primary` substitutes against `captions.json.brand.primary` (the
+brand color caption-stylist already chose). If `text` exceeds
+`max_chars`, the overlay word-wraps and emits a `hook_overlay_wrapped`
+soft warning. If the template lacks a `hook_overlay` block, the
+renderer falls back to defaults (white text, black stroke) and emits
+`template_missing_hook_overlay`.
+
+### Progress bar
+
+A horizontal bar at the bottom (or top) of the canvas whose fill grows
+linearly from 0 % at `t=0` to 100 % at `t=end_ms - start_ms`. Rendered
+via ffmpeg `drawbox`. The renderer chains 20 stepped drawbox calls
+(one per `T/20` seconds) — ffmpeg 6.x's drawbox doesn't evaluate `w`
+expressions per frame, so per-step `enable` predicates drive the
+animation. 20 steps is smooth at 24–30 fps playback.
+
+### Font handling
+
+ASS layer rendering uses libass + fontconfig with system-fallback
+defaults: Liberation Sans on Linux, Helvetica on macOS, Arial on
+Windows. The plugin does NOT ship Inter / Noto Emoji / any other
+font. Cross-platform emoji burning falls back to whatever the
+system has installed; on a barebones Linux container without
+Noto Color Emoji, emojis may render as monochrome glyph boxes. This
+is a deliberate trade-off — shipping 8 MB of Noto Emoji to every
+plugin install for one rarely-used render path isn't worth it.
+
+### Sidecars (VTT + SRT)
+
+When `edit.json.captions_json` is set (or `edit.json.captions` is a
+`.ass` file with a sibling `.json`), the renderer emits two sidecar
+files next to the MP4:
+
+- `./renders/<slug>/<clip-id>.vtt` — WebVTT (web-embed ready).
+- `./renders/<slug>/<clip-id>.srt` — SRT (universal compatibility,
+  Premiere/DaVinci import).
+
+Both timelines match the burned `.ass` file's word timing — same source,
+three formats. Empty captions → sidecars skipped silently.
+
+### `render_report.json` extension
+
+The schema (`schemas/render_report.v1.json`) is additive — v0.2.x readers
+ignore the new fields. New top-level keys:
+
+- `target_aspect`: `"9:16" | "1:1" | "4:5" | null`
+- `overlays`: `{ hook: {burned, wrapped, end_ms} | null, progress_bar: {burned, color, height_px, position} | null } | null`
+- `sidecars`: `{ vtt: <abspath>|null, srt: <abspath>|null } | null`
+
+New warning codes that may appear in `render_report.warnings`:
+`unknown_aspect`, `hook_overlay_wrapped`, `template_missing_hook_overlay`,
+`progress_bar_invalid_geometry`.

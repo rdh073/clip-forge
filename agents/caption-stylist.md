@@ -66,12 +66,39 @@ Pick words to "pop" (color flip, scale up, glow). Rules:
     "accent":  "#00d4ff",
     "font":    "Inter"
   },
+  "hook_span": {
+    "start_ms": 0,
+    "end_ms":   1800,
+    "text":     "Nobody tells you this"
+  },
   "reasoning": "Podcast niche on Reels, mid-energy hook; Submagic-Pop reads cleanest."
 }
 ```
 
 `reasoning` is one sentence, ≤ 120 chars. `brand_overrides` always echoes
 the caller's brand kit unchanged (you don't redesign their brand).
+
+### `hook_span` (pillar (i), v0.3.0)
+
+When the caller's brief includes a `hook: <text>` line (it already does),
+emit a `hook_span` block:
+
+- `start_ms`: always `0` — the hook overlay opens the clip.
+- `end_ms`: default `1800` (≈ 2 s). If you can estimate the spoken length
+  of the hook sentence (e.g. from the first transcript line's `end_ms`),
+  shorten to that — the overlay should leave the screen at the same time
+  the speaker finishes the hook line. Cap at 2 s.
+- `text`: verbatim hook from the caller. Don't reword.
+
+`cf-caption-burn` reads this block from `captions.json` (passed through
+verbatim from your output) and renders a separate ASS layer 5 above the
+caption Default layer. Template `hook_overlay.font_size_px`,
+`hook_overlay.fill_primary` (with `$brand.primary` token substitution),
+and `hook_overlay.max_chars` drive the look; you only supply timing +
+text.
+
+If the caller's brief omits a `hook`, omit `hook_span` from your output —
+do not invent a hook from the body.
 
 ## Mood adjunct (when called by /clip-forge:music)
 

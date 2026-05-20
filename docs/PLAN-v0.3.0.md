@@ -22,7 +22,7 @@ the unchanged north star.
 ## 0. What changed since revision 1
 
 Revision 1 (2026-05-20 early) selected 5 picks for v0.3.0: **a, b, c, e, i**.
-Four of those have now landed on master:
+All five have now landed on master:
 
 | Pillar | Skill / bin                        | Status                                       |
 |--------|------------------------------------|----------------------------------------------|
@@ -30,9 +30,9 @@ Four of those have now landed on master:
 | b      | `/clip-forge:enhance` · `bin/cf-enhance` · `tests/fixtures/noisy-speech-5s.mp4` · `tests/integration/enhance.test.mjs` · `tests/integration/enhance-render.test.mjs` | shipped at commit `eb7dd47` (2026-05-20)  |
 | c      | `/clip-forge:clip --prompt` · `bin/cf-clip` · `agents/clip-scout.md` (Prompt-based filtering section) · `tests/mocks/clip-scout-mock.mjs` · `tests/fixtures/topic-transcript-60s.json` · `tests/integration/clip-prompt.test.mjs` | shipped at commit `27626ef` (2026-05-20)  |
 | e      | `bin/cf-whisper --vocab` · `bin/lib/vocab.mjs` · `bin/lib/vocab.test.mjs` · `skills/transcribe/SKILL.md` (Brand vocabulary section) · `tests/fixtures/{mock-transcript-clipforge-3s,mock-transcript-silent-3s,sample-vocab,large-vocab}.json` · `tests/integration/vocab.test.mjs` | shipped at commit `7ddac74` (2026-05-20) |
+| i      | `bin/cf-ffmpeg render` (hook overlay + progress bar + aspect + sidecar plumbing) · `bin/cf-caption-burn` (emoji + highlight + sidecar flags) · `bin/lib/overlay-builder.mjs` + `.test.mjs` · `bin/lib/srt-vtt.mjs` + `.test.mjs` · `agents/caption-stylist.md` (hook_span output) · `skills/render/SKILL.md` + `skills/caption/SKILL.md` · `templates/captions/{Submagic-Pop,Beast}.json` (hook_overlay block) · `schemas/render_report.v1.json` (target_aspect / overlays / sidecars fields) · `tests/integration/overlay.test.mjs` | shipped at commit `set after rebase` (2026-05-21) |
 
-That leaves one pick for the v0.3.0 minor: **i**. The deferral
-table in §2 is unchanged.
+All v0.3.0 picks shipped. The deferral table in §2 is unchanged.
 
 This revision rewrites:
 - **§1 gap table** — collapses (a) and (b) into ✅ shipped rows; recomputes
@@ -65,7 +65,7 @@ Legend — Complexity: S=≤300 LOC ≤2d · M=≤700 LOC ≤5d · L=≤1500 LOC
 | f | Intro / outro stinger templates                             | `templates/intros/` is empty; `edit.json` carries `intro` / `outro` fields but renderer doesn't honor them yet.       | Ship 2–3 Remotion-rendered stinger MP4s + `cf-ffmpeg concat` step.                              | M          | ~600 | Remotion CLI (already a soft dep via thumbnails comp), node 20+, ffmpeg `concat` demuxer.                 | Remotion install footprint is large; keep CLI invocation optional, pre-render assets and ship as binary artifacts. Low leverage — most viral creators skip stingers. | v0.5.0  |
 | g | XML export (Premiere / DaVinci handoff)                     | None.                                                                                                                | FCP7 XML (`.fcpxml` v1.10) emitter or simple EDL `.edl` from `edit.json` + `tighten_plan.json`.   | L          | ~1200| FCP7 XML schema; xmlbuilder2 npm (MIT, no native).                                                        | FCP7 XML is fiddly; partial support is worse than none. Mitigation: ship `.edl` first (text format, trivial), `.fcpxml` follows.              | v0.5.0  |
 | h | Speaker diarization for multi-speaker reframe               | Deepgram diarizes; transcript carries `speaker` per word. Reframe accepts `--speaker-map` but does not auto-route timeline. | Reframe consumes per-speaker timeline; renders split-screen letterbox when ≥2 speakers active.   | M          | ~650 | Existing transcript schema; cf-reframe `--speaker-route auto`; sherpa-onnx VAD for the offline path.       | Whisper diarize quality is patchy. Mitigation: feature requires Deepgram OR opt-in `--diarize sherpa` (v0.4.0 add).                           | v0.4.0  |
-| i | Hook overlay + progress bar + dynamic emoji captions + aspect profiles | Captions JSON carries emoji-per-line + highlight flags but renderer doesn't burn hook overlay or progress bar. `cf-reframe` accepts `--target-aspect` but `cf-ffmpeg render` hard-codes 1080×1920. | ASS overlay for hook text in first ≤2 s; ffmpeg `drawbox` progress bar; emoji burned per line via ASS; plumb `target_aspect` through `edit.json` for 1:1 / 4:5 / 9:16. | M          | ~560 | ffmpeg `drawbox`, ASS layers. Noto Emoji ttf (SIL OFL, ~8 MB) — optional, ships only if user opts in.     | drawtext + emoji needs fontconfig set up cross-platform. Mitigation: render emojis through ASS only (already proven via Submagic-Pop template path). | v0.3.0  |
+| i | ✅ Hook overlay + progress bar + dynamic emoji captions + aspect profiles | Landed at commit `set after rebase`. `edit.json` now carries optional `hook_overlay` / `progress_bar` / `target_aspect`. Renderer composes a Layer-5 ASS hook over the caption Default layer, a 20-step `drawbox` chain for the progress bar, and remaps the output canvas to 1080×1920 / 1080×1080 / 1080×1350 for 9:16 / 1:1 / 4:5. `cf-caption-burn` now honors `lines[].emoji` and `lines[].words[].highlight`. Each render emits `<output>.vtt` + `<output>.srt` next to the MP4. | —                                                                                                | M          | ~600 (shipped) | ffmpeg `drawbox`, ASS layers, libass + fontconfig system-fallback (no Inter / Noto Emoji ttf shipped). | Shipped. Watch items: Karaoke / Neon / Gradient template `hook_overlay` blocks deferred to v0.3.1 (Submagic-Pop + Beast ship with the block; the others render via fallback defaults + `template_missing_hook_overlay` soft warning). | v0.3.0  |
 | j | Real OAuth publish (TikTok → YT Shorts → IG Reels)          | MCP stubs (`bin/mcp/tiktok.mjs`, `youtube.mjs`, `instagram.mjs`) return `auth_required`.                              | TikTok Content Posting API, YouTube Data API v3 resumable, Instagram Graph reel container.       | L          | ~1400| TikTok developer review; Google OAuth client; FB developer app; loopback HTTP server for auth dance.      | Each platform gates on developer-program approval the maintainer has to obtain. Mitigation: implement per-platform; release as each lands.    | v0.4.0  |
 
 ### Pillars NOT in the user's list but worth flagging
@@ -537,3 +537,56 @@ the remaining v0.3.0 slices land:
     mock hook, and the post-pass share the same lib without a
     shell-to-Node trampoline. Canonical JSON shape, model-cache
     behaviour, and exit semantics preserved.
+- 2026-05-21 — Pillar (i) Hook overlay + progress bar + emoji burn +
+  aspect profiles + VTT/SRT sidecars shipped. Decisions resolved:
+  * §7 Q3 (hook overlay font) — **system fallback** chosen. ASS layer
+    renders through libass + fontconfig; no Inter or Noto Emoji ttf
+    shipped with the plugin. Cross-platform: Liberation Sans on Linux,
+    Helvetica on macOS, Arial on Windows. Trade-off documented in
+    `skills/render/SKILL.md` → "Font handling". Emoji on barebones Linux
+    containers without Noto Color Emoji may render as monochrome glyph
+    boxes; integration test asserts the rendered band differs from
+    no-emoji baseline (proxy for "something extra rendered"), not
+    glyph identity.
+  * §7 Q4 (sidecar format) — **both VTT and SRT** shipped. ~20 LOC each,
+    no choice penalty. `bin/lib/srt-vtt.mjs` exposes `buildVtt` +
+    `buildSrt`; both consume the same `captions.json` schema as the
+    burned `.ass`, so the three formats stay in lockstep. `cf-ffmpeg
+    render` emits both unconditionally when captions are present; an
+    empty captions document → minimal valid `WEBVTT\n\n` for VTT +
+    empty file for SRT.
+  * §7 Q5 (aspect framing rule) — **same crop, smaller canvas**. The
+    reframe stage stays aspect-agnostic; `cf-ffmpeg render` overrides
+    `crop_path.target_w/h` in memory based on `edit.json.target_aspect`.
+    Users who want tighter per-aspect framing can re-run `cf-reframe
+    --target-aspect <name>` to regenerate `crop_path.json` against the
+    smaller canvas. Documented in `skills/render/SKILL.md` → "Aspect
+    profiles".
+  * Progress-bar animation strategy — ffmpeg 6.x's `drawbox` does NOT
+    evaluate `w`/`x` expressions per frame in our installed build
+    (despite the AVOption "T" runtime-tunable flag), so animating via
+    `w=t*W/T` produces a static full-width box. Workaround: chain 20
+    stepped `drawbox` calls each with a static width and an `enable`
+    predicate scoped to a `T/20`-second time slice. `enable` is a
+    timeline filter that IS evaluated per-frame, so the animation
+    works. 20 steps is smooth at 24-30 fps playback; bumping to 40+
+    is a one-line change in `buildProgressBarDrawbox`. Deviation from
+    the brief (which assumed `drawbox` would animate `w` natively).
+  * Templates — Submagic-Pop + Beast carry `hook_overlay` blocks; the
+    other three (Karaoke / Neon / Gradient) defer to v0.3.1 to keep the
+    slice within LOC budget. Renderer falls back to default styling
+    (white text, black stroke, Liberation Sans) when the chosen
+    template lacks the block, with a `template_missing_hook_overlay`
+    soft warning. No render failure.
+  * §8 Telemetry-schema extension — implemented as additive on schema
+    v1: three new top-level fields (`target_aspect`, `overlays`,
+    `sidecars`) marked optional, no existing required field altered.
+    Four new warning codes documented in the schema's `warnings.items`
+    description.
+  * Non-splice deterministic mode — `cf-ffmpeg render`'s passthrough
+    path previously didn't honor `CF_RENDER_DETERMINISTIC=1` (only the
+    splice path did). Required for the new
+    `overlay.test.mjs` byte-identical-baseline assertion; extended
+    `planCropArgs` to accept the deterministic flag and add the same
+    `-fflags +bitexact -tune zerolatency -x264-params sliced-threads=0:threads=1`
+    suffix as the splice path.

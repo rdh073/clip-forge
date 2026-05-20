@@ -114,7 +114,7 @@
     },
     "warnings": {
       "type": "array",
-      "description": "Render-level warnings (filter_graph_length_near_limit, aac_priming_overhead, junction_too_short_for_xfade, etc.). Same shape as plan warnings.",
+      "description": "Render-level warnings (filter_graph_length_near_limit, aac_priming_overhead, junction_too_short_for_xfade, unknown_aspect, hook_overlay_wrapped, template_missing_hook_overlay, progress_bar_invalid_geometry, etc.). Same shape as plan warnings.",
       "items": {
         "type": "object",
         "required": ["code", "message"],
@@ -123,6 +123,45 @@
           "code":    { "type": "string" },
           "message": { "type": "string" }
         }
+      }
+    },
+    "target_aspect": {
+      "type": ["string", "null"],
+      "description": "Output canvas aspect — pillar (i) v0.3.0. One of '9:16' | '1:1' | '4:5'. Renderer maps to 1080×1920 | 1080×1080 | 1080×1350. Unknown values fall back to '9:16' and emit warning unknown_aspect. null when not requested (defaults to 9:16)."
+    },
+    "overlays": {
+      "type": ["object", "null"],
+      "description": "Pillar (i) v0.3.0 — hook overlay + progress bar telemetry. Null when neither overlay was requested.",
+      "additionalProperties": false,
+      "properties": {
+        "hook": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "properties": {
+            "burned":  { "type": "boolean" },
+            "wrapped": { "type": "boolean" },
+            "end_ms":  { "type": "number", "minimum": 0 }
+          }
+        },
+        "progress_bar": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "properties": {
+            "burned":    { "type": "boolean" },
+            "color":     { "type": "string" },
+            "height_px": { "type": "integer", "minimum": 0 },
+            "position":  { "type": "string", "enum": ["bottom", "top"] }
+          }
+        }
+      }
+    },
+    "sidecars": {
+      "type": ["object", "null"],
+      "description": "Pillar (i) v0.3.0 — VTT + SRT sidecar emission. Each field is the absolute path to the written file, or null when skipped (captions absent or empty).",
+      "additionalProperties": false,
+      "properties": {
+        "vtt": { "type": ["string", "null"] },
+        "srt": { "type": ["string", "null"] }
       }
     }
   }

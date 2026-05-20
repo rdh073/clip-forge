@@ -30,5 +30,14 @@
     "highlight": "color_swap"
   },
   "emoji_strategy": "auto",
-  "words_per_line": 4
+  "words_per_line": 4,
+  "hook_overlay": {
+    "font_size_px": 88,
+    "stroke_px": 6,
+    "fill_primary": "$brand.primary",
+    "stroke_color": "#000000",
+    "shadow_px": 2,
+    "default_position": "upper-third",
+    "max_chars": 36
+  }
 }

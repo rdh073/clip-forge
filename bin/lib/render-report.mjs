@@ -127,6 +127,7 @@ export function buildRenderReport(input) {
     clipId, renderMode, inputDurationMs, outputDurationMs, audioDurationMs,
     encoder, deterministic, passes, filterComplexBytes, junctionXfadeS,
     tighten, junctions, warnings,
+    targetAspect, overlays, sidecars,
   } = input;
 
   // Sign convention: av_drift_ms = video − audio (output is video post-concat;
@@ -154,6 +155,9 @@ export function buildRenderReport(input) {
     tighten: tighten || null,
     junctions: junctions || [],
     warnings: warnings || [],
+    target_aspect: targetAspect ?? null,
+    overlays: overlays ?? null,
+    sidecars: sidecars ?? null,
   };
 }
 

@@ -30,5 +30,14 @@
     "highlight": "scale_115_yellow"
   },
   "emoji_strategy": "sentence_end",
-  "words_per_line": 3
+  "words_per_line": 3,
+  "hook_overlay": {
+    "font_size_px": 104,
+    "stroke_px": 8,
+    "fill_primary": "$brand.primary",
+    "stroke_color": "#000000",
+    "shadow_px": 4,
+    "default_position": "upper-third",
+    "max_chars": 28
+  }
 }

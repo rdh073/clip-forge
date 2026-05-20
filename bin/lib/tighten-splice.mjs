@@ -163,9 +163,10 @@ function complementOf(cuts, dur) {
  * @param {string} args.cropFilterArg crop+scale filter chain e.g. 'crop=360:640:140:0,scale=1080:1920'
  * @param {string|null} args.captionsPath path to .ass captions, or null
  * @param {boolean} args.hasAudio     whether the source has an audio stream
+ * @param {string|null} [args.overlayFilter] optional filter chain inserted between concat and captions burn (e.g. progress-bar drawbox). Pillar (i) v0.3.0.
  * @returns {{filterComplex:string, videoGraph:string, audioGraph:string|null, mapVideo:string, mapAudio:string|null, padDurS:number, junctionCount:number, keptCount:number}}
  */
-export function buildSpliceGraph({ plan, cropFilterArg, captionsPath, hasAudio }) {
+export function buildSpliceGraph({ plan, cropFilterArg, captionsPath, hasAudio, overlayFilter }) {
   const kept = plan.kept_segments || [];
   const N = kept.length;
   if (N === 0) {
@@ -188,11 +189,18 @@ export function buildSpliceGraph({ plan, cropFilterArg, captionsPath, hasAudio }
     }
     videoParts.push(`${rangeLabels('v', N)}concat=n=${N}:v=1:a=0[vconcat]`);
   }
+  // Optional progress-bar / drawbox layer goes BEFORE the captions burn so
+  // ASS dialogue renders on top of the bar. Pillar (i) v0.3.0.
+  let preCaptionLabel = '[vconcat]';
+  if (overlayFilter) {
+    videoParts.push(`[vconcat]${overlayFilter}[vpre]`);
+    preCaptionLabel = '[vpre]';
+  }
   if (captionsPath) {
     const ascii = escapeAssPath(captionsPath);
-    videoParts.push(`[vconcat]ass='${ascii}'[vout]`);
+    videoParts.push(`${preCaptionLabel}ass='${ascii}'[vout]`);
   } else {
-    videoParts.push(`[vconcat]null[vout]`);
+    videoParts.push(`${preCaptionLabel}null[vout]`);
   }
   const mapVideo = '[vout]';
   const videoGraph = videoParts.join(';');

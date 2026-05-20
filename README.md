@@ -39,7 +39,7 @@ ClipForge is closing.
 | Speech enhance (loudnorm + denoise)  | ✅        | ✅       |
 | Brand vocabulary (custom dictionary) | ✅        | ✅       |
 | **Prompt-based clipping**            | **✅**    | ✅       |
-| Hook overlay + progress bar          | ❌        | ✅       |
+| **Hook overlay + progress bar**      | **✅**    | ✅       |
 
 Pillar (a) Filler-word & pause removal landed as `/clip-forge:tighten` —
 locale-aware filler dicts (en + id), silence detection, plan invariants,
@@ -67,6 +67,19 @@ brand / product / proper-noun terms; transcripts run a case-restore
 post-pass so "clipforge", "Clip-Forge", or "Clipforge!" all canonicalise
 to the casing in `vocab.json`. Hallucination-guarded — a silent input
 stays silent. See [skills/transcribe/SKILL.md](skills/transcribe/SKILL.md).
+
+Pillar (i) Hook overlay + progress bar + emoji caption burn + aspect
+profiles + VTT/SRT sidecars closes the *visual* parity gap with OpusClip.
+`edit.json` now carries optional `hook_overlay`, `progress_bar`, and
+`target_aspect` fields; the renderer composes a separate ASS layer for
+the hook (libass + system-fallback fonts), a 20-step `drawbox` chain for
+the progress bar, and remaps the output canvas to 1080×1920 / 1080×1080
+/ 1080×1350 for `9:16` / `1:1` / `4:5` respectively. `cf-caption-burn`
+now honors `lines[].emoji` and `lines[].words[].highlight` from
+`captions.json` (previously ignored). Every render emits `<output>.vtt`
++ `<output>.srt` next to the MP4 when captions are present. See
+[skills/render/SKILL.md](skills/render/SKILL.md) and
+[skills/caption/SKILL.md](skills/caption/SKILL.md).
 
 **Known characteristics:**
 - PFLD inference is ~60 ms per face on CPU. A 30-minute source at 6 fps

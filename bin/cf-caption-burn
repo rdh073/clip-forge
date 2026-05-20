@@ -4,9 +4,27 @@
 //
 // Usage:
 //   cf-caption-burn --in <captions.json> --tpl <style.json> --out <captions.ass>
+//                   [--sidecar-dir <dir>] [--target-aspect 9:16|1:1|4:5]
+//
+// Pillar (i) v0.3.0 additions:
+//   * --sidecar-dir <dir>: when set, emits <out-basename>.vtt + .srt next to the
+//     .ass file using the same captions timeline.
+//   * --target-aspect <name>: maps to a canvas size for the hook-overlay style
+//     block. Hook overlay is rendered when both the template carries a
+//     hook_overlay block AND captions.json carries hook_span.
+//   * Honors highlight + emoji metadata via overlay-builder's
+//     applyEmojiHighlightToAss (previously this was inlined here).
 
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { dirname, join, basename, resolve as resolvePath } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import {
+  chooseAspectCanvas,
+  buildHookOverlayAss,
+  applyEmojiHighlightToAss,
+} from './lib/overlay-builder.mjs';
+import { buildVtt, buildSrt } from './lib/srt-vtt.mjs';
 
 function die(msg, code = 1) {
   process.stderr.write('cf-caption-burn: ' + msg + '\n');
@@ -20,8 +38,17 @@ function parseArgs(argv) {
     if (a === '--in')  out.in  = argv[++i];
     else if (a === '--tpl') out.tpl = argv[++i];
     else if (a === '--out') out.out = argv[++i];
+    else if (a === '--sidecar-dir') out.sidecarDir = argv[++i];
+    else if (a === '--target-aspect') out.targetAspect = argv[++i];
   }
   return out;
+}
+
+function resolveBrandToken(value, brand) {
+  if (typeof value !== 'string' || !value.startsWith('$brand.')) return value;
+  const key = value.slice('$brand.'.length);
+  if (brand && key in brand) return brand[key];
+  return null;
 }
 
 function msToAss(ms) {
@@ -42,8 +69,9 @@ function escapeText(t) {
   return t.replace(/\\/g, '\\\\').replace(/\n/g, '\\N').replace(/\{/g, '\\{').replace(/\}/g, '\\}');
 }
 
-function buildAss({ captions, tpl }) {
-  const W = 1080, H = 1920;
+function buildAss({ captions, tpl, targetAspect }) {
+  const canvas = chooseAspectCanvas(targetAspect);
+  const W = canvas.w, H = canvas.h;
   const font = (captions.font) || (tpl.font && tpl.font.family) || 'Inter';
   const sizePx = (tpl.font && tpl.font.size_px) || 72;
   const weight = (tpl.font && tpl.font.weight) || 700;
@@ -53,12 +81,51 @@ function buildAss({ captions, tpl }) {
   const strokeWidth = (tpl.outline && tpl.outline.width_px) || 4;
   const shadow      = (tpl.outline && tpl.outline.shadow_px) || 2;
   const marginV = (tpl.position && tpl.position.margin_v_px) || 220;
+  const warnings = canvas.warning ? [canvas.warning] : [];
 
-  const styleLine =
+  const defaultStyle =
     'Style: Default,' + font + ',' + sizePx + ',' +
     hexToAss(fill) + ',' + hexToAss(fill) + ',' + hexToAss(stroke) + ',&H64000000&,' +
     (weight >= 700 ? -1 : 0) + ',0,0,0,100,100,0,0,1,' +
     strokeWidth + ',' + shadow + ',2,40,40,' + marginV + ',1';
+
+  // Optional hook overlay style + dialogue. Template carries the look;
+  // captions.json carries the timing (hook_span). When the template is
+  // missing the hook_overlay block but captions.json has hook_span, fall
+  // back to defaults and record a soft warning.
+  const styles = [defaultStyle];
+  const hookEvents = [];
+  if (captions.hook_span && (tpl.hook_overlay || hasHookText(captions))) {
+    const tplHook = tpl.hook_overlay || {};
+    if (!tpl.hook_overlay) {
+      warnings.push({ code: 'template_missing_hook_overlay',
+                      message: 'template ' + (tpl.name || 'unnamed') + ' missing hook_overlay block — using defaults.' });
+    }
+    const hookText = captions.hook_span.text || (captions.hook && captions.hook.text) || captions.hook || '';
+    const fillPrim = resolveBrandToken(tplHook.fill_primary, captions.brand) || (captions.brand && captions.brand.primary) || '#ffffff';
+    const strokeCol = resolveBrandToken(tplHook.stroke_color, captions.brand) || '#000000';
+    const hookRes = buildHookOverlayAss({
+      text:        hookText,
+      end_ms:      captions.hook_span.end_ms ?? 1800,
+      position:    tplHook.default_position || 'upper-third',
+      fontSize:    tplHook.font_size_px,
+      fillPrimary: fillPrim,
+      strokeColor: strokeCol,
+      strokePx:    tplHook.stroke_px,
+      shadow:      tplHook.shadow_px,
+      maxChars:    tplHook.max_chars,
+      canvasW:     W,
+      canvasH:     H,
+    });
+    for (const w of hookRes.warnings) warnings.push(w);
+    if (hookRes.ass) {
+      const hookLines = hookRes.ass.split('\n').filter(Boolean);
+      for (const l of hookLines) {
+        if (l.startsWith('Style: ')) styles.push(l);
+        else if (l.startsWith('Dialogue: ')) hookEvents.push(l);
+      }
+    }
+  }
 
   const head = [
     '[Script Info]',
@@ -71,42 +138,54 @@ function buildAss({ captions, tpl }) {
     '',
     '[V4+ Styles]',
     'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
-    styleLine,
+    ...styles,
     '',
     '[Events]',
     'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
   ];
 
-  const events = [];
-  for (const line of captions.lines || []) {
-    const start = msToAss(line.start_ms);
-    const end   = msToAss(line.end_ms);
-    const parts = [];
-    for (const w of line.words || []) {
-      if (w.highlight) {
-        parts.push('{\\c' + hexToAss(hi) + '\\fscx108\\fscy108}' + escapeText(w.w) + '{\\c' + hexToAss(fill) + '\\fscx100\\fscy100}');
-      } else {
-        parts.push(escapeText(w.w));
-      }
-    }
-    let text = parts.join(' ');
-    if (line.emoji) text += ' ' + escapeText(line.emoji);
-    events.push('Dialogue: 0,' + start + ',' + end + ',Default,,0,0,0,,' + text);
-  }
+  // Caption body via the shared overlay-builder lib (honors emoji + highlight).
+  const body = applyEmojiHighlightToAss(captions, { fill, highlight: hi });
+  for (const w of body.warnings) warnings.push(w);
+  const captionEvents = body.ass ? body.ass.trimEnd().split('\n').filter(Boolean) : [];
 
-  return head.concat(events).join('\n') + '\n';
+  const ass = head.concat(captionEvents).concat(hookEvents).join('\n') + '\n';
+  return { ass, warnings };
+}
+
+function hasHookText(captions) {
+  return !!(captions.hook_span && (captions.hook_span.text || captions.hook));
 }
 
 const opts = parseArgs(process.argv.slice(2));
 if (!opts.in || !opts.tpl || !opts.out) {
-  die('usage: cf-caption-burn --in <captions.json> --tpl <style.json> --out <captions.ass>');
+  die('usage: cf-caption-burn --in <captions.json> --tpl <style.json> --out <captions.ass> [--sidecar-dir <dir>] [--target-aspect 9:16|1:1|4:5]');
 }
 
 let captions, tpl;
 try { captions = JSON.parse(readFileSync(opts.in,  'utf-8')); } catch (e) { die('read captions: ' + e.message); }
 try { tpl      = JSON.parse(readFileSync(opts.tpl, 'utf-8')); } catch (e) { die('read template: ' + e.message); }
 
-const ass = buildAss({ captions, tpl });
+const { ass, warnings } = buildAss({ captions, tpl, targetAspect: opts.targetAspect });
 mkdirSync(dirname(opts.out), { recursive: true });
 writeFileSync(opts.out, ass);
-process.stdout.write(JSON.stringify({ event: 'done', path: opts.out, lines: (captions.lines || []).length }) + '\n');
+
+let sidecars = { vtt: null, srt: null };
+if (opts.sidecarDir) {
+  mkdirSync(opts.sidecarDir, { recursive: true });
+  const base = basename(opts.out).replace(/\.[^.]+$/, '');
+  const vttPath = join(opts.sidecarDir, base + '.vtt');
+  const srtPath = join(opts.sidecarDir, base + '.srt');
+  writeFileSync(vttPath, buildVtt(captions));
+  writeFileSync(srtPath, buildSrt(captions));
+  sidecars = { vtt: vttPath, srt: srtPath };
+}
+
+const summary = {
+  event: 'done',
+  path: opts.out,
+  lines: (captions.lines || []).length,
+  warnings,
+  sidecars,
+};
+process.stdout.write(JSON.stringify(summary) + '\n');
