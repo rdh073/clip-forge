@@ -5,6 +5,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — v0.4.0 pillar 2: multi-language dub + voice clone
+
+- New TTS abstraction layer at `bin/lib/tts.mjs` with four backend
+  adapters under `bin/lib/tts/`: `elevenlabs.mjs`, `cartesia.mjs`,
+  `groq.mjs`, `piper.mjs`. Provider resolution per PLAN-v0.4.0 §7 Q1:
+  `ELEVENLABS_API_KEY → CARTESIA_API_KEY → GROQ_API_KEY → Piper local`.
+  Override via `CF_TTS_PROVIDER=<name>`. Test injection via
+  `CF_TTS_MOCK=<path>` script that emits realistic-duration WAVs
+  (~400 ms/word).
+- `/clip-forge:voice-clone` (new) — wizard slash command +
+  `bin/cf-voice-clone` dispatcher. Slices a 30-second sample from
+  `source.mp4`, uploads to the configured provider, persists the
+  returned `voice_id` in `voices.json`. Per-project (`./uploads/<slug>/
+  voices.json`) wins entirely over global (`~/.clip-forge/voices.json`)
+  per Q2. Schema carries `default` + `uses: ["hook", "outro",
+  "dub-id", "dub-en", …]` fields. Non-cloning providers (Groq, Piper)
+  degrade gracefully with a `voice_clone_disabled_*` warning rather
+  than crashing.
+- `/clip-forge:dub <lang-codes>` (new) — translate + TTS-dub the
+  transcript into one or more target languages. Pipeline: translate
+  via `bin/lib/translate.mjs` (mock path now; LLM real-network call
+  lands in pillar 4), window into sentences, synthesize per-window
+  WAVs via `tts.synthesize`, concat aligned to source `start_ms`,
+  silence-pad shorter / warn longer (D3 ±200 ms invariant). Emits
+  `./uploads/<slug>/dubbed-<lang>.wav` + `dub_report-<lang>.json` +
+  `./clips/<slug>/<clip-id>/edit.dub-<lang>.json` per-lang variants.
+- `edit.json` schema additions (additive — v0.3.0 readers ignore):
+  `prepend_audio` and `append_audio`, each accepting either
+  `{tts: {text, voice_id?, provider?}}` (lazy synthesis cached as
+  `<output>.<kind>.wav`) or `{audio_path: <abs path>}`. The renderer
+  mux-concatenates these around the main clip, surfacing
+  `tts_provider_used` + `tts_nondeterministic` in the render_report.
+- New cumulative-spend tracker at `bin/lib/budget.mjs` writing to
+  `./renders/<slug>/render_manifest.json.ai_costs`. Honors
+  `CF_AI_BUDGET_USD` (default $10) — 80 % checkpoint emits
+  `event:budget_checkpoint` NDJSON for the skill to surface via
+  `AskUserQuestion`; 100 % hard-stop appends to `skipped[]` with
+  `reason: budget_exhausted` and never charges further. `--yolo`
+  silent skip at 100 %.
+- `schemas/render_report.v1.json` extended additively with
+  `ai_costs`, `tts_provider_used`, `tts_nondeterministic`,
+  `dub_languages`. Existing render_report consumers see no breaking
+  change; `dub_languages` defaults to `[]`, `tts_nondeterministic`
+  defaults to `false`.
+- `bin/install-models.mjs --piper` (new flag) — downloads the Piper
+  TTS binary + one generic English voice model into
+  `~/.clip-forge/piper/`. Required only when `/clip-forge:dub` runs
+  with no TTS keys; otherwise the resolver picks a paid provider.
+- `.env.example` gains `ELEVENLABS_API_KEY`, `CARTESIA_API_KEY`,
+  `GROQ_API_KEY`, `CF_TTS_PROVIDER`, `CF_AI_BUDGET_USD` (all optional
+  — default install touches none of them).
+- README gains a "🔑 BYO API Keys (Optional Tier 2 Features)" section
+  above the install instructions, and the OpusClip parity table flips
+  Voice cloning row (new) → ✅ + adds a Multi-language dub row → ✅.
+- Tests: 36 unit (`bin/lib/tts.test.mjs` × 15 — precedence /
+  override / brand_voice_override / mock injection / hallucination
+  guard; `bin/lib/voices.test.mjs` × 10; `bin/lib/budget.test.mjs`
+  × 12), 11 integration (`tests/integration/dub.test.mjs` × 7 —
+  1-lang, 3-lang, D4 idempotency, hallucination guard, budget
+  100 % hard-stop, budget 80 % checkpoint event, no-keys + no-piper
+  graceful; `tests/integration/voice-clone.test.mjs` × 4;
+  `tests/integration/dub-render.test.mjs` × 2 including the
+  composition gate — dub.audio_source + 16:9 + tighten + hook_overlay
+  + render_manifest.json ai_costs surfaced in render_report).
+- Source: `docs/PLAN-v0.4.0.md` §3.2 + §7 Q1/Q2/Q4 + §8 cross-cutting.
+
 ### Added — v0.4.0 pillar 1: 16:9 aspect profile
 
 - `target_aspect: "16:9"` in `edit.json` produces a 1920×1080 landscape

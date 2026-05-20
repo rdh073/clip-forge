@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "schema": "render_manifest.v1",
+  "slug": "demo",
+  "created_at": "2026-05-20T19:10:48.095Z",
+  "ai_costs": {
+    "cumulative_usd": 0.0858,
+    "budget_cap_usd": 10,
+    "breakdown": {
+      "mock:elevenlabs_tts": 0.0858
+    },
+    "skipped": [],
+    "history": [
+      {
+        "ts": "2026-05-20T19:10:48.163Z",
+        "provider": "mock:elevenlabs",
+        "kind": "tts",
+        "delta_usd": 0.0074,
+        "clip_id": "c01",
+        "lang": "id"
+      },
+      {
+        "ts": "2026-05-20T19:10:48.194Z",
+        "provider": "mock:elevenlabs",
+        "kind": "tts",
+        "delta_usd": 0.0064,
+        "clip_id": "c01",
+        "lang": "id"
+      },
+      {
+        "ts": "2026-05-20T19:10:48.222Z",
+        "provider": "mock:elevenlabs",
+        "kind": "tts",
+        "delta_usd": 0.0073,
+        "clip_id": "c01",
+        "lang": "id"
+      },
+      {
+        "ts": "2026-05-20T19:10:48.253Z",
+        "provider": "mock:elevenlabs",
+        "kind": "tts",
+        "delta_usd": 0.0105,
+        "clip_id": "c01",
+        "lang": "id"
+      },
+      {
+        "ts": "2026-05-20T19:10:48.284Z",
+        "provider": "mock:elevenlabs",
+        "kind": "tts",
+        "delta_usd": 0.0113,
+        "clip_id": "c01",
+        "lang": "id"
+      },
+      {
+        "ts": "2026-05-20T19:10:48.453Z",
+        "provider": "mock:elevenlabs",
+        "kind": "tts",
+        "delta_usd": 0.0074,
+        "clip_id": "c01",
+        "lang": "es"
+      },
+      {
+        "ts": "2026-05-20T19:10:48.482Z",
+        "provider": "mock:elevenlabs",
+        "kind": "tts",
+        "delta_usd": 0.0064,
+        "clip_id": "c01",
+        "lang": "es"
+      },
+      {
+        "ts": "2026-05-20T19:10:48.517Z",
+        "provider": "mock:elevenlabs",
+        "kind": "tts",
+        "delta_usd": 0.0073,
+        "clip_id": "c01",
+        "lang": "es"
+      },
+      {
+        "ts": "2026-05-20T19:10:48.549Z",
+        "provider": "mock:elevenlabs",
+        "kind": "tts",
+        "delta_usd": 0.0105,
+        "clip_id": "c01",
+        "lang": "es"
+      },
+      {
+        "ts": "2026-05-20T19:10:48.580Z",
+        "provider": "mock:elevenlabs",
+        "kind": "tts",
+        "delta_usd": 0.0113,
+        "clip_id": "c01",
+        "lang": "es"
+      }
+    ]
+  }
+}

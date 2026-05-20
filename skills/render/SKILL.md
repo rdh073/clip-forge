@@ -215,3 +215,46 @@ ignore the new fields. New top-level keys:
 New warning codes that may appear in `render_report.warnings`:
 `unknown_aspect`, `hook_overlay_wrapped`, `template_missing_hook_overlay`,
 `progress_bar_invalid_geometry`.
+
+### v0.4.0 pillar 2 additions (additive)
+
+- `edit.json.prepend_audio` and `edit.json.append_audio` (optional) —
+  each may be either `{ tts: { text, voice_id?, provider? } }` (lazy
+  synthesis via `bin/lib/tts.mjs`, cached to `<output>.<kind>.wav` next
+  to the mp4) or `{ audio_path: <abs path> }` (use existing WAV
+  directly). The renderer mux-concatenates these stingers around the
+  main clip.
+- `render_report.ai_costs` — snapshot of `render_manifest.json.ai_costs`
+  at render time. Surfaces `total_usd`, `breakdown`, `budget_cap_usd`,
+  `budget_used_pct`, `budget_exhausted`, `skipped_clips`.
+- `render_report.tts_provider_used` — `"elevenlabs" | "cartesia" |
+  "groq" | "piper" | "mock:<name>" | null`.
+- `render_report.tts_nondeterministic` — `true` iff any TTS call ran
+  during this render.
+- `render_report.dub_languages` — target languages dubbed for this
+  clip (echoed from `edit.json.dub.target_lang` and/or
+  `edit.json.dub_languages`).
+
+### Reproducibility / determinism (v0.4.0 pillar 2 contract)
+
+`CF_RENDER_DETERMINISTIC` modes (PLAN-v0.4.0 §5 risks row 3):
+
+| Value | Behavior |
+|---|---|
+| (unset) | Production. No determinism enforcement. |
+| `strict` | Legacy v0.3.0. Fails the render if any TTS participated (`tts_nondeterministic: true`). |
+| `audio` | Audio MD5 must be byte-identical across two runs; video allowed ±200 ms drift. |
+| `visual` | Video MD5 must be byte-identical across two runs; audio drift OK. |
+| `relaxed` | ±200 ms drift on both. Auto-applied when `tts_nondeterministic: true` and the user hasn't set the env var. |
+
+The render skill detects TTS participation BEFORE the encoder runs by
+inspecting `edit.json.{prepend_audio, append_audio, dub}` and the
+existence of a `render_manifest.json.ai_costs.history[]` entry of kind
+`"tts"`. If `CF_RENDER_DETERMINISTIC=strict` is set in any of those
+cases, the render fails fast with code `tts_nondeterministic_in_strict_mode`
+and a reminder pointing here.
+
+For idempotency on a TTS-affected pipeline, the realistic-mock contract
+keeps the test path byte-identical: same transcript + same voice_id +
+same mock seed → byte-identical `dubbed.wav` (see
+`tests/integration/dub.test.mjs` D4 assertion).

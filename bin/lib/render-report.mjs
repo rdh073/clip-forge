@@ -128,6 +128,7 @@ export function buildRenderReport(input) {
     encoder, deterministic, passes, filterComplexBytes, junctionXfadeS,
     tighten, junctions, warnings,
     targetAspect, overlays, sidecars,
+    aiCosts, ttsProviderUsed, ttsNondeterministic, dubLanguages,
   } = input;
 
   // Sign convention: av_drift_ms = video − audio (output is video post-concat;
@@ -158,6 +159,10 @@ export function buildRenderReport(input) {
     target_aspect: targetAspect ?? null,
     overlays: overlays ?? null,
     sidecars: sidecars ?? null,
+    ai_costs: aiCosts ?? null,
+    tts_provider_used: ttsProviderUsed ?? null,
+    tts_nondeterministic: !!ttsNondeterministic,
+    dub_languages: Array.isArray(dubLanguages) ? dubLanguages.slice() : [],
   };
 }
 

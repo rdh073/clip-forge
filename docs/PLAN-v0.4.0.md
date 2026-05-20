@@ -26,8 +26,8 @@ every new external AI integration follows the existing `DEEPGRAM_API_KEY`
 
 | Feature | v0.3.0 verdict | v0.4.0 verdict | Providers (BYO) | Cost / 30s clip | Moat preservation |
 |---|---|---|---|---|---|
-| Voice cloning + TTS | REJECT | **ACCEPT** | ElevenLabs · Cartesia · Groq PlayAI · **Piper TTS (local fallback)** | $0.025–0.15 (or $0 with Piper) | Key absent → Piper local TTS or original audio retained; never fail render. |
-| Multi-language dub | implicit REJECT | **ACCEPT** | Whisper translate (local) + above TTS providers | $0.025–0.15 + translate | Key absent → translation written; dub skipped with warning. |
+| Voice cloning + TTS ✅ shipped | REJECT | **ACCEPT** | ElevenLabs · Cartesia · Groq PlayAI · **Piper TTS (local fallback)** | $0.025–0.15 (or $0 with Piper) | Key absent → Piper local TTS or original audio retained; never fail render. |
+| Multi-language dub ✅ shipped | implicit REJECT | **ACCEPT** | Whisper translate (local) + above TTS providers | $0.025–0.15 + translate | Key absent → translation written; dub skipped with warning. |
 | Visual styles | REJECT | **CONDITIONAL ACCEPT** — scope to B-roll + intro stingers only, NOT primary clip body | fal.ai Flux Schnell · Nano Banana · Replicate fallback | $0.10–2.50 | Stylization operates on FETCHED footage (Pexels) or generated stingers — never the creator's primary clip. |
 | AI Avatars | REJECT | **CONDITIONAL ACCEPT** — limited to ≤5s intro/outro stingers, never clip body | HeyGen · D-ID · Hedra | $0.30–1.50 / sec × ≤5s | Avatar is a stinger asset only. Two-gate consent (§7 Q3). |
 | Prompt-driven re-edit | REJECT | **ACCEPT** (bundled into cf-edit) | Groq Llama 3.3 70B (default) · Anthropic Claude Haiku 4.5 (fallback) | $0.001–0.02 / instruction | LLM emits RFC 6902 JSON patch against existing edit.json; 3-layer validation (schema + whitelist + dry-run preview). |
@@ -59,8 +59,8 @@ the rest of the BYO surface).
 
 | # (ship order) | Pick | Impact | 1/Effort | Moat | Score | LOC |
 |---|---|:-:|:-:|:-:|:-:|---|
-| 1 | **16:9 aspect profile** | 5 | 3 (S) | 5 | **75** | ~30 |
-| 2 | **Multi-language dub + voice clone** | 5 | 2 (M) | 4 | **40** | ~600 |
+| 1 | **16:9 aspect profile** ✅ | 5 | 3 (S) | 5 | **75** | ~30 |
+| 2 | **Multi-language dub + voice clone** ✅ | 5 | 2 (M) | 4 | **40** | ~600 |
 | 3 | **Brand kit / custom assets** | 4 | 2 (M) | 5 | **40** | ~400 |
 | 4 | **cf-edit + prompt-driven re-edit** | 4 | 2 (M) | 4 | **32** | ~500 |
 | 5 | **AI B-roll: stylization + avatar stingers** | 3 | 2 (M) | 3 | 18 | ~700 |

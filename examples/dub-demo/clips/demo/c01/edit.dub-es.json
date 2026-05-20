@@ -1,0 +1,10 @@
+{
+  "audio_source": "./examples/dub-demo/uploads/demo/dubbed-es.wav",
+  "dub": {
+    "source_lang": "en",
+    "target_lang": "es",
+    "voice_id": null,
+    "provider": "elevenlabs",
+    "report": "./examples/dub-demo/uploads/demo/dub_report-es.json"
+  }
+}

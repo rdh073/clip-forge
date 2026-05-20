@@ -1,0 +1,196 @@
+#!/usr/bin/env node
+// cf-voice-clone — dispatcher for /clip-forge:voice-clone.
+//
+// Pipeline:
+//   1. Slice a ~30s sample from <source> (ffmpeg trim).
+//   2. Pick TTS provider per precedence (or honor --provider / CF_TTS_PROVIDER).
+//   3. Upload sample → provider clone API → receive voice_id.
+//   4. Write/merge into voices.json — per-project wins, global default optional.
+//
+// Graceful degrade matrix:
+//   - no TTS keys + no Piper → still writes a "no_provider" entry so the
+//                                voices.json shape stays valid and the dub
+//                                skill prints the bilingual ID+EN warning.
+//   - Groq selected (no clone) → records `provider: groq` + `voice_id: <default>`
+//                                  with `warning: voice_clone_disabled_groq`.
+//   - Piper selected (no clone) → same shape with `warning: voice_clone_disabled_piper`.
+//
+// Mock injection: CF_TTS_MOCK=<path> short-circuits the upload — the mock
+// returns the provider's would-be JSON shape, the dispatcher writes the
+// voice entry. Used by tests.
+
+import { spawnSync } from 'node:child_process';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs';
+import { dirname, join, resolve as resolvePath, basename } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+
+import { cloneVoice, resolveProvider } from './lib/tts.mjs';
+import { loadLibrary, upsertVoice, saveLibraryFile } from './lib/voices.mjs';
+
+function die(msg, code = 1) {
+  process.stderr.write('cf-voice-clone: ' + msg + '\n');
+  process.exit(code);
+}
+
+function parseArgs(argv) {
+  const out = {
+    slug:         null,
+    source:       null,
+    sampleStart:  0,
+    sampleEnd:    30000,
+    samplePath:   null,
+    voiceKey:     'creator-main',
+    provider:     null,
+    uses:         [],
+    global:       false,
+    description:  null,
+    jsonLogs:     true,
+  };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--help' || a === '-h') { printHelp(); process.exit(0); }
+    else if (a === '--slug')        out.slug = argv[++i];
+    else if (a === '--source')      out.source = argv[++i];
+    else if (a === '--sample-start-ms') out.sampleStart = parseInt(argv[++i], 10);
+    else if (a === '--sample-end-ms')   out.sampleEnd   = parseInt(argv[++i], 10);
+    else if (a === '--sample-path') out.samplePath = argv[++i];
+    else if (a === '--voice-key')   out.voiceKey = argv[++i];
+    else if (a === '--provider')    out.provider = argv[++i];
+    else if (a === '--uses')        out.uses = String(argv[++i] || '').split(',').filter(Boolean);
+    else if (a === '--description') out.description = argv[++i];
+    else if (a === '--global')      out.global = true;
+    else if (a === '--no-json-logs') out.jsonLogs = false;
+    else die('unknown flag: ' + a);
+  }
+  return out;
+}
+
+function printHelp() {
+  process.stdout.write(`cf-voice-clone — upload a voice sample to the chosen TTS provider and persist voices.json
+
+usage:
+  cf-voice-clone --slug <slug> --source <source.mp4|wav> [options]
+
+options:
+  --sample-start-ms N    extract from N ms (default 0)
+  --sample-end-ms N      extract to   N ms (default 30000)
+  --sample-path <p>      use this WAV instead of slicing (skips ffmpeg)
+  --voice-key <key>      voices.json key (default "creator-main")
+  --provider <name>      force provider (elevenlabs|cartesia|groq|piper)
+  --uses <csv>           use-tags (e.g. "hook,outro,dub-id")
+  --description <text>   provider-side description
+  --global               write to ~/.clip-forge/voices.json instead of per-project
+  --no-json-logs         suppress NDJSON progress lines
+
+env:
+  CF_TTS_PROVIDER        same effect as --provider
+  CF_TTS_MOCK <path>     mock injection for tests
+  ELEVENLABS_API_KEY     enable ElevenLabs adapter
+  CARTESIA_API_KEY       enable Cartesia adapter
+  GROQ_API_KEY           enable Groq PlayAI (no clone — generic voice)
+`);
+}
+
+function which(bin) {
+  const r = spawnSync('sh', ['-c', 'command -v ' + bin], { encoding: 'utf-8' });
+  return r.status === 0 ? r.stdout.trim() : null;
+}
+
+function jlog(opts, obj) {
+  if (opts.jsonLogs) process.stdout.write(JSON.stringify(obj) + '\n');
+}
+
+function sliceSample(source, startMs, endMs, dst) {
+  if (!which('ffmpeg')) return { ok: false, reason: 'ffmpeg_missing' };
+  if (!existsSync(source)) return { ok: false, reason: 'source_missing' };
+  mkdirSync(dirname(dst), { recursive: true });
+  const startS = (Math.max(0, startMs) / 1000).toFixed(3);
+  const endS   = (Math.max(startMs + 100, endMs) / 1000).toFixed(3);
+  const r = spawnSync('ffmpeg', [
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-ss', startS, '-to', endS,
+    '-i', source,
+    '-vn', '-ac', '1', '-ar', '22050', '-c:a', 'pcm_s16le', dst,
+  ]);
+  if (r.status !== 0) {
+    return { ok: false, reason: 'ffmpeg_slice_failed',
+             detail: (r.stderr ? r.stderr.toString().slice(-240) : 'exit ' + r.status) };
+  }
+  return { ok: true };
+}
+
+(async () => {
+  const opts = parseArgs(process.argv.slice(2));
+  if (!opts.slug)  die('--slug required');
+  if (!opts.source && !opts.samplePath) die('--source or --sample-path required');
+
+  // 1. Get a sample on disk.
+  let samplePath = opts.samplePath;
+  if (!samplePath) {
+    samplePath = join('./uploads', opts.slug, 'voice-sample.wav');
+    const slice = sliceSample(opts.source, opts.sampleStart, opts.sampleEnd, samplePath);
+    if (!slice.ok) {
+      jlog(opts, { event: 'done', ok: false, fallback_used: true, fallback_reason: slice.reason });
+      process.exit(0);
+    }
+  }
+  if (!existsSync(samplePath) || statSync(samplePath).size === 0) {
+    jlog(opts, { event: 'done', ok: false, fallback_used: true, fallback_reason: 'sample_missing' });
+    process.exit(0);
+  }
+
+  jlog(opts, { event: 'sample_ready', path: resolvePath(samplePath) });
+
+  // 2. Resolve provider.
+  let chosen;
+  try { chosen = resolveProvider(opts.provider); }
+  catch (e) {
+    jlog(opts, { event: 'done', ok: false, fallback_used: true, fallback_reason: e.message });
+    process.exit(0);
+  }
+  jlog(opts, { event: 'provider_resolved', provider: chosen.name,
+               supports_voice_clone: chosen.adapter.SUPPORTS_VOICE_CLONE });
+
+  // 3. Clone (or graceful-degrade for non-cloning providers).
+  const cloneRes = await cloneVoice({
+    name:        opts.voiceKey,
+    sample_path: resolvePath(samplePath),
+    description: opts.description,
+    provider:    chosen.name,
+  });
+
+  if (cloneRes && cloneRes.fallback_used) {
+    jlog(opts, { event: 'done', ok: false, fallback_used: true,
+                 fallback_reason: cloneRes.fallback_reason });
+    process.exit(0);
+  }
+
+  // 4. Persist into voices.json.
+  const globalPath  = join(homedir(), '.clip-forge', 'voices.json');
+  const projectPath = join('./uploads', opts.slug, 'voices.json');
+  const targetPath  = opts.global ? globalPath : projectPath;
+  const { library } = loadLibrary({ globalPath, projectPath: opts.global ? null : projectPath });
+  const updated = upsertVoice(library, opts.voiceKey, {
+    provider:    cloneRes.provider_used || chosen.name,
+    voice_id:    cloneRes.voice_id,
+    sample_path: resolvePath(samplePath),
+    uses:        opts.uses,
+  });
+  saveLibraryFile(targetPath, updated);
+
+  jlog(opts, {
+    event: 'done',
+    ok: true,
+    voices_path:  targetPath,
+    voice_key:    opts.voiceKey,
+    voice_id:     cloneRes.voice_id,
+    provider:     cloneRes.provider_used || chosen.name,
+    voice_clone_supported: cloneRes.voice_clone_supported !== false,
+    warning:      cloneRes.warning || null,
+    cost_usd:     cloneRes.cost_usd || 0,
+  });
+})().catch((e) => {
+  process.stdout.write(JSON.stringify({ event: 'done', ok: false, fallback_used: true,
+                                         fallback_reason: 'uncaught: ' + e.message }) + '\n');
+  process.exit(0);
+});

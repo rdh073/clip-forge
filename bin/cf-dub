@@ -1,0 +1,540 @@
+#!/usr/bin/env node
+// cf-dub — dispatcher for /clip-forge:dub <lang-codes>.
+//
+// Pipeline (PLAN-v0.4.0 §3.2):
+//   1. Read transcript.json + clip metadata.
+//   2. For each target lang:
+//      a. translate transcript (via lib/translate.mjs).
+//      b. synthesize WAV chunks per sentence-or-window.
+//      c. concat into ./uploads/<slug>/dubbed-<lang>.wav aligned to source ms.
+//      d. write ./uploads/<slug>/dub_report-<lang>.json.
+//      e. patch edit.json for that lang at ./clips/<slug>/<clip-id>/edit.dub-<lang>.json
+//         (we DO NOT clobber the canonical edit.json — we emit per-lang variants).
+//   3. Update ./renders/<slug>/render_manifest.json.ai_costs cumulatively.
+//   4. Honor CF_AI_BUDGET_USD (80% checkpoint left to skill markdown via
+//      AskUserQuestion; 100% hard-stop here with skipped_clips telemetry).
+//
+// Mock injection:
+//   CF_TTS_MOCK=<path>       — every TTS call routes through it
+//   CF_TRANSLATE_MOCK=<path> — every translate routes through it
+//
+// Graceful degrade:
+//   no TTS providers AND Piper not installed → exit 0,
+//     dub_report.fallback_reason = "no_tts_provider".
+//   translate provider absent and no mock → exit 0,
+//     dub_report.fallback_reason = "no_translate_provider".
+//
+// Skill-ordering: this script does NOT trigger a render — it produces the
+// per-lang artifacts. The render skill picks them up via --dub-lang.
+
+import { spawnSync } from 'node:child_process';
+import {
+  existsSync, readFileSync, writeFileSync, mkdirSync, statSync, unlinkSync,
+} from 'node:fs';
+import { dirname, join, resolve as resolvePath, basename } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+
+import { synthesize, resolveProvider, buildPlaceholderWav, buildSilentWav } from './lib/tts.mjs';
+import { writeWavFile } from './lib/tts/wav.mjs';
+import { loadLibrary, resolveVoiceForUse } from './lib/voices.mjs';
+import {
+  loadManifest, saveManifest, projectCharge, recordCharge, recordSkip,
+  snapshotForReport, DEFAULT_BUDGET_USD, raiseCap,
+} from './lib/budget.mjs';
+import { translateTranscript } from './lib/translate.mjs';
+
+function die(msg) {
+  process.stderr.write('cf-dub: ' + msg + '\n');
+  process.exit(1);
+}
+
+function parseArgs(argv) {
+  const out = {
+    slug:          null,
+    clipId:        null,
+    transcript:    null,
+    editJson:      null,
+    targetLangs:   [],
+    sourceLang:    'en',
+    voiceKey:      null,
+    yolo:          false,
+    jsonLogs:      true,
+    manifestPath:  null,
+    voicesGlobal:  null,
+    voicesProject: null,
+  };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--help' || a === '-h') { printHelp(); process.exit(0); }
+    else if (a === '--slug')         out.slug = argv[++i];
+    else if (a === '--clip-id')      out.clipId = argv[++i];
+    else if (a === '--transcript')   out.transcript = argv[++i];
+    else if (a === '--edit-json')    out.editJson = argv[++i];
+    else if (a === '--langs')        out.targetLangs = String(argv[++i] || '').split(',').map((s) => s.trim()).filter(Boolean);
+    else if (a === '--source-lang')  out.sourceLang = argv[++i];
+    else if (a === '--voice-key')    out.voiceKey = argv[++i];
+    else if (a === '--manifest')     out.manifestPath = argv[++i];
+    else if (a === '--voices-global') out.voicesGlobal = argv[++i];
+    else if (a === '--voices-project') out.voicesProject = argv[++i];
+    else if (a === '--yolo')         out.yolo = true;
+    else if (a === '--no-json-logs') out.jsonLogs = false;
+    else die('unknown flag: ' + a);
+  }
+  if (!out.slug)        die('--slug required');
+  if (!out.transcript)  die('--transcript required');
+  if (out.targetLangs.length === 0) die('--langs <csv> required');
+  return out;
+}
+
+function printHelp() {
+  process.stdout.write(`cf-dub — translate + TTS-dub a transcript into N target languages
+
+usage:
+  cf-dub --slug <slug> --transcript <p> --langs id,en,es [options]
+
+options:
+  --clip-id <id>        clip identifier (used in report + manifest)
+  --edit-json <p>       patch this edit.json per-lang variant (defaults to ./clips/<slug>/<clip-id>/edit.json)
+  --source-lang <code>  source language (default en)
+  --voice-key <key>     voice key from voices.json (default: resolved by uses[])
+  --manifest <p>        render_manifest.json path for budget tracking
+                        (default ./renders/<slug>/render_manifest.json)
+  --voices-global <p>   override global voices.json (default ~/.clip-forge/voices.json)
+  --voices-project <p>  override per-project voices.json (default ./uploads/<slug>/voices.json)
+  --yolo                silent skip at 100% budget (no AskUserQuestion checkpoints)
+  --no-json-logs        suppress NDJSON progress lines
+
+env:
+  ELEVENLABS_API_KEY · CARTESIA_API_KEY · GROQ_API_KEY  — TTS providers
+  CF_TTS_PROVIDER  — force TTS provider
+  CF_TTS_MOCK      — mock TTS (test path)
+  CF_TRANSLATE_MOCK — mock translate (test path)
+  CF_AI_BUDGET_USD — cumulative USD cap (default ${DEFAULT_BUDGET_USD})
+`);
+}
+
+function jlog(opts, obj) {
+  if (opts.jsonLogs) process.stdout.write(JSON.stringify(obj) + '\n');
+}
+
+function which(bin) {
+  const r = spawnSync('sh', ['-c', 'command -v ' + bin], { encoding: 'utf-8' });
+  return r.status === 0 ? r.stdout.trim() : null;
+}
+
+function loadJsonSafe(path) {
+  if (!existsSync(path)) return { ok: false, reason: 'missing' };
+  try { return { ok: true, data: JSON.parse(readFileSync(path, 'utf-8')) }; }
+  catch (e) { return { ok: false, reason: 'unreadable', detail: e.message }; }
+}
+
+/**
+ * Split a transcript.json (Whisper / Deepgram shape) into sentence-windows.
+ * Falls back to a single window when no words[] is present.
+ *
+ * Sentence delimiter: explicit punctuation (. ! ? ;) OR a gap > 700 ms
+ * between words OR every 14 words (whichever comes first). This keeps
+ * TTS chunks short enough that any single failure only loses ≤ a sentence.
+ */
+function splitIntoWindows(transcript) {
+  const words = Array.isArray(transcript.words) ? transcript.words : [];
+  if (words.length === 0) {
+    // Single-window fallback — text only, timeline 0..duration_ms.
+    const text = (transcript.text || '').trim();
+    if (!text) return [];
+    return [{ text, start_ms: 0, end_ms: transcript.duration_ms || 0 }];
+  }
+  const windows = [];
+  let buf = [];
+  let bufStart = words[0].start_ms ?? 0;
+  let lastEnd  = bufStart;
+  const flush = () => {
+    if (buf.length === 0) return;
+    const text = buf.map((w) => w.w).join(' ').replace(/\s+/g, ' ').trim();
+    windows.push({ text, start_ms: bufStart, end_ms: lastEnd });
+    buf = [];
+  };
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    if (buf.length === 0) bufStart = w.start_ms ?? lastEnd;
+    buf.push(w);
+    lastEnd = w.end_ms ?? (w.start_ms ?? lastEnd);
+    const next = words[i + 1];
+    const endsPunct = /[.!?;]\s*$/.test(w.w || '');
+    const gap = next ? ((next.start_ms ?? lastEnd) - lastEnd) : 0;
+    if (endsPunct || gap > 700 || buf.length >= 14) flush();
+  }
+  flush();
+  return windows;
+}
+
+/**
+ * Concatenate per-window WAVs into one timeline-aligned WAV. Uses ffmpeg
+ * filter_complex with adelay + amix. Falls back to writing a silent WAV
+ * when no chunks were produced (hallucination guard).
+ */
+function concatTimeline({ chunks, totalMs, outPath }) {
+  mkdirSync(dirname(outPath), { recursive: true });
+  if (!which('ffmpeg')) {
+    return { ok: false, reason: 'ffmpeg_missing' };
+  }
+  const validChunks = chunks.filter((c) => c.audio_path && existsSync(c.audio_path) && statSync(c.audio_path).size > 0);
+  if (validChunks.length === 0) {
+    // Empty timeline → write a silent WAV of totalMs duration.
+    const silent = buildSilentWav(totalMs);
+    writeWavFile(outPath, silent);
+    return { ok: true, used_chunks: 0, padded_silent: true };
+  }
+  // Build filter graph: for each chunk N → "[N:a]adelay=offset|offset[aN]"
+  // then amix N inputs.
+  const inputs = [];
+  const filterParts = [];
+  const mixLabels = [];
+  validChunks.forEach((c, idx) => {
+    inputs.push('-i', c.audio_path);
+    const offsetMs = Math.max(0, Math.round(c.start_ms || 0));
+    filterParts.push('[' + idx + ':a]aresample=22050,aformat=channel_layouts=mono,adelay=' +
+                     offsetMs + '|' + offsetMs + ',apad=whole_dur=' + (totalMs / 1000).toFixed(3) + '[a' + idx + ']');
+    mixLabels.push('[a' + idx + ']');
+  });
+  const filter = filterParts.join(';') + ';' + mixLabels.join('') +
+                 'amix=inputs=' + validChunks.length + ':duration=longest:normalize=0[mix]';
+  const r = spawnSync('ffmpeg', [
+    '-hide_banner', '-loglevel', 'error', '-y',
+    ...inputs,
+    '-filter_complex', filter,
+    '-map', '[mix]',
+    '-t',   (totalMs / 1000).toFixed(3),
+    '-ar', '22050', '-ac', '1',
+    '-c:a', 'pcm_s16le',
+    outPath,
+  ]);
+  if (r.status !== 0) {
+    return { ok: false, reason: 'ffmpeg_concat_failed',
+             detail: (r.stderr ? r.stderr.toString().slice(-240) : 'exit ' + r.status) };
+  }
+  return { ok: true, used_chunks: validChunks.length, padded_silent: false };
+}
+
+(async () => {
+  const opts = parseArgs(process.argv.slice(2));
+
+  // 1. Load transcript.
+  const tx = loadJsonSafe(opts.transcript);
+  if (!tx.ok) {
+    jlog(opts, { event: 'done', ok: false, fallback_used: true,
+                  fallback_reason: 'transcript_' + tx.reason });
+    process.exit(0);
+  }
+
+  // 2. Resolve voice library (per-project wins).
+  const globalPath  = opts.voicesGlobal  || join(homedir(), '.clip-forge', 'voices.json');
+  const projectPath = opts.voicesProject || join('./uploads', opts.slug, 'voices.json');
+  const voicesRes = loadLibrary({ globalPath, projectPath });
+
+  // 3. Open render_manifest for budget arbitration.
+  const manifestPath = opts.manifestPath || join('./renders', opts.slug, 'render_manifest.json');
+  let manifest = loadManifest(manifestPath, { slug: opts.slug });
+
+  // 4. Resolve TTS provider (eager — surfaces graceful-degrade up front).
+  let providerInfo;
+  try { providerInfo = resolveProvider(); }
+  catch (e) {
+    jlog(opts, { event: 'done', ok: false, fallback_used: true,
+                  fallback_reason: 'tts_provider_unresolvable: ' + e.message });
+    process.exit(0);
+  }
+
+  // Compute total clip duration for timeline alignment.
+  const totalMs = Number(tx.data.duration_ms || 0) || estimateTotalMs(tx.data);
+
+  const allLangReports = [];
+  const startedAt = new Date().toISOString();
+
+  for (const lang of opts.targetLangs) {
+    jlog(opts, { event: 'lang_start', lang });
+
+    // a. translate
+    const trRes = await translateTranscript({
+      transcript:  tx.data,
+      source_lang: opts.sourceLang,
+      target_lang: lang,
+    });
+    if (trRes && trRes.fallback_used) {
+      const report = buildEmptyLangReport({
+        slug: opts.slug, clipId: opts.clipId, lang, providerName: providerInfo.name,
+        sourceLang: opts.sourceLang, totalMs,
+        fallback_used: true, fallback_reason: trRes.fallback_reason,
+      });
+      writeLangReport(opts.slug, lang, report);
+      allLangReports.push(report);
+      jlog(opts, { event: 'lang_done', lang, fallback_used: true,
+                    fallback_reason: trRes.fallback_reason });
+      continue;
+    }
+
+    // b. window+synthesize
+    const windows = splitIntoWindows(trRes.transcript);
+    if (windows.length === 0) {
+      // Hallucination guard: empty translated transcript → silent WAV.
+      const outPath = join('./uploads', opts.slug, 'dubbed-' + lang + '.wav');
+      mkdirSync(dirname(outPath), { recursive: true });
+      writeWavFile(outPath, buildSilentWav(totalMs));
+      const report = buildEmptyLangReport({
+        slug: opts.slug, clipId: opts.clipId, lang, providerName: providerInfo.name,
+        sourceLang: opts.sourceLang, totalMs,
+        fallback_used: false, fallback_reason: null,
+        dubbed_path: outPath, hallucination_guard: true,
+      });
+      writeLangReport(opts.slug, lang, report);
+      allLangReports.push(report);
+      jlog(opts, { event: 'lang_done', lang, hallucination_guard: true,
+                    duration_ms: totalMs });
+      continue;
+    }
+
+    const voice = resolveVoiceForUse(voicesRes.library, 'dub-' + lang);
+    const voiceId = voice ? voice.voice_id : null;
+
+    const chunks = [];
+    const chunkDir = join('./uploads', opts.slug, 'dub-chunks-' + lang);
+    mkdirSync(chunkDir, { recursive: true });
+    let budgetExhausted = false;
+    let skippedInLang = 0;
+    let langCostUsd = 0;
+
+    for (let i = 0; i < windows.length; i++) {
+      const win = windows[i];
+      const chunkPath = join(chunkDir, 'w' + String(i).padStart(4, '0') + '.wav');
+      // Estimate cost up-front (worst-case ElevenLabs per-char rate).
+      const estCost = 0.0003 * String(win.text || '').length;
+      const proj = projectCharge(manifest, estCost);
+      if (proj.would_exceed) {
+        // 100% hard-stop. --yolo: silent skip; otherwise record skipped.
+        recordSkip(manifest, { clip_id: opts.clipId, lang,
+                                reason: 'budget_exhausted' });
+        skippedInLang++;
+        budgetExhausted = true;
+        if (opts.yolo) continue;
+        // For non-yolo, still continue marking all remaining clips skipped
+        // — the AskUserQuestion gate at 80% lives in the skill markdown;
+        // by the time we hit 100% here, the user opted in to the cap.
+        continue;
+      }
+      if (proj.checkpoint_hit) {
+        // Surface the 80% checkpoint as an event so the skill markdown
+        // can fire its AskUserQuestion. We continue under --yolo and
+        // also when no flag — the markdown caller pre-checks env state.
+        jlog(opts, { event: 'budget_checkpoint',
+                      used_pct: proj.used_pct_after,
+                      cap_usd:  manifest.ai_costs.budget_cap_usd });
+      }
+      const result = await synthesize({
+        text: win.text, voice_id: voiceId, language: lang,
+        audio_path: chunkPath,
+        provider: providerInfo.name,
+      });
+      if (result.fallback_used) {
+        // Single-chunk failure → silence-pad that window, keep going.
+        const placeholderMs = (win.end_ms || 0) - (win.start_ms || 0);
+        const silent = buildSilentWav(Math.max(0, placeholderMs));
+        writeWavFile(chunkPath, silent);
+        chunks.push({ audio_path: chunkPath, start_ms: win.start_ms,
+                       end_ms: win.end_ms, fallback_used: true,
+                       fallback_reason: result.fallback_reason });
+        continue;
+      }
+      recordCharge(manifest, {
+        provider:  result.provider_used,
+        kind:      'tts',
+        delta_usd: result.cost_usd || estCost,
+        clip_id:   opts.clipId,
+        lang,
+      });
+      langCostUsd += result.cost_usd || estCost;
+      chunks.push({
+        audio_path: result.audio_path,
+        start_ms:   win.start_ms,
+        end_ms:     win.start_ms + (result.duration_ms || (win.end_ms - win.start_ms)),
+        duration_ms: result.duration_ms,
+        cost_usd:    result.cost_usd || estCost,
+        fallback_used: false,
+      });
+    }
+
+    // c. concat into the dubbed-<lang>.wav timeline.
+    const outPath = join('./uploads', opts.slug, 'dubbed-' + lang + '.wav');
+    const concatRes = concatTimeline({ chunks, totalMs, outPath });
+    if (!concatRes.ok) {
+      const report = buildEmptyLangReport({
+        slug: opts.slug, clipId: opts.clipId, lang, providerName: providerInfo.name,
+        sourceLang: opts.sourceLang, totalMs,
+        fallback_used: true, fallback_reason: concatRes.reason,
+      });
+      writeLangReport(opts.slug, lang, report);
+      allLangReports.push(report);
+      jlog(opts, { event: 'lang_done', lang, fallback_used: true,
+                    fallback_reason: concatRes.reason });
+      continue;
+    }
+
+    // Probe output duration to enforce D3 (±200 ms).
+    const dubbedDurMs = probeAudioDuration(outPath);
+    const drift = dubbedDurMs - totalMs;
+    const warnings = [];
+    if (drift > 200)  warnings.push({ code: 'dub_audio_longer_than_source',
+                                       message: 'dubbed audio ' + drift + ' ms longer than source' });
+    if (drift < -200) warnings.push({ code: 'dub_audio_shorter_than_source',
+                                       message: 'dubbed audio ' + Math.abs(drift) + ' ms shorter than source (silence-padded)' });
+
+    const report = {
+      version:           1,
+      schema:            'dub_report.v1',
+      slug:              opts.slug,
+      clip_id:           opts.clipId,
+      source_lang:       opts.sourceLang,
+      target_lang:       lang,
+      provider:          providerInfo.name,
+      voice_key:         voice ? voice.key : null,
+      voice_id:          voiceId,
+      voice_clone_used:  voice ? true : false,
+      tts_nondeterministic: true,
+      dubbed_path:       resolvePath(outPath),
+      duration_source_ms: totalMs,
+      duration_dubbed_ms: dubbedDurMs,
+      drift_ms:          drift,
+      cost_usd_estimate: +langCostUsd.toFixed(6),
+      tts_calls:         chunks.filter((c) => !c.fallback_used).length,
+      tts_skipped:       skippedInLang,
+      budget_exhausted:  budgetExhausted,
+      fallback_used:     false,
+      fallback_reason:   null,
+      warnings,
+      generated_at:      startedAt,
+    };
+    writeLangReport(opts.slug, lang, report);
+
+    // d. Per-lang edit.json variant.
+    if (opts.clipId) {
+      patchPerLangEditJson({
+        slug: opts.slug, clipId: opts.clipId, lang,
+        editJsonInput: opts.editJson,
+        dubbedPath:    resolvePath(outPath),
+        voiceKey:      voice ? voice.key : null,
+        provider:      providerInfo.name,
+        reportPath:    perLangReportPath(opts.slug, lang),
+      });
+    }
+
+    allLangReports.push(report);
+    jlog(opts, { event: 'lang_done', lang, dubbed_path: outPath,
+                  duration_ms: dubbedDurMs, drift_ms: drift,
+                  cost_usd: report.cost_usd_estimate });
+  }
+
+  // Persist the budget manifest.
+  saveManifest(manifestPath, manifest);
+
+  // Final summary event.
+  const totalCost = manifest.ai_costs.cumulative_usd;
+  jlog(opts, {
+    event:           'done',
+    ok:              true,
+    langs:           opts.targetLangs,
+    reports:         allLangReports.map((r) => ({ lang: r.target_lang,
+                                                    dubbed_path: r.dubbed_path,
+                                                    fallback_used: r.fallback_used,
+                                                    fallback_reason: r.fallback_reason })),
+    manifest_path:   manifestPath,
+    cumulative_usd:  totalCost,
+    budget_cap_usd:  manifest.ai_costs.budget_cap_usd,
+    budget_used_pct: snapshotForReport(manifest).budget_used_pct,
+  });
+})().catch((e) => {
+  process.stdout.write(JSON.stringify({ event: 'done', ok: false,
+                                          fallback_used: true,
+                                          fallback_reason: 'uncaught: ' + e.message }) + '\n');
+  process.exit(0);
+});
+
+// ---------------- helpers ----------------
+
+function estimateTotalMs(transcript) {
+  const ws = Array.isArray(transcript.words) ? transcript.words : [];
+  if (ws.length === 0) return 0;
+  return ws[ws.length - 1].end_ms || ws[ws.length - 1].start_ms || 0;
+}
+
+function probeAudioDuration(path) {
+  if (!existsSync(path)) return 0;
+  const r = spawnSync('ffprobe', [
+    '-v', 'error', '-show_entries', 'format=duration',
+    '-of', 'default=noprint_wrappers=1:nokey=1', path,
+  ], { encoding: 'utf-8' });
+  if (r.status !== 0) return 0;
+  const sec = parseFloat((r.stdout || '').trim());
+  return Number.isFinite(sec) ? Math.round(sec * 1000) : 0;
+}
+
+function perLangReportPath(slug, lang) {
+  return join('./uploads', slug, 'dub_report-' + lang + '.json');
+}
+
+function writeLangReport(slug, lang, report) {
+  const p = perLangReportPath(slug, lang);
+  mkdirSync(dirname(p), { recursive: true });
+  writeFileSync(p, JSON.stringify(report, null, 2) + '\n');
+  return p;
+}
+
+function buildEmptyLangReport({ slug, clipId, lang, providerName, sourceLang, totalMs, fallback_used, fallback_reason, dubbed_path = null, hallucination_guard = false }) {
+  return {
+    version:           1,
+    schema:            'dub_report.v1',
+    slug, clip_id: clipId,
+    source_lang:       sourceLang,
+    target_lang:       lang,
+    provider:          providerName,
+    voice_key:         null,
+    voice_id:          null,
+    voice_clone_used:  false,
+    tts_nondeterministic: !fallback_used,
+    dubbed_path:       dubbed_path,
+    duration_source_ms: totalMs,
+    duration_dubbed_ms: dubbed_path ? probeAudioDuration(dubbed_path) : 0,
+    drift_ms:          0,
+    cost_usd_estimate: 0,
+    tts_calls:         0,
+    tts_skipped:       0,
+    budget_exhausted:  false,
+    fallback_used,
+    fallback_reason,
+    hallucination_guard,
+    warnings: [],
+    generated_at:      new Date().toISOString(),
+  };
+}
+
+function patchPerLangEditJson({ slug, clipId, lang, editJsonInput, dubbedPath, voiceKey, provider, reportPath }) {
+  const inputPath = editJsonInput || join('./clips', slug, clipId, 'edit.json');
+  let base = {};
+  if (existsSync(inputPath)) {
+    try { base = JSON.parse(readFileSync(inputPath, 'utf-8')); }
+    catch { base = {}; }
+  }
+  const out = {
+    ...base,
+    audio_source: dubbedPath,
+    dub: {
+      source_lang: base.dub && base.dub.source_lang ? base.dub.source_lang : 'en',
+      target_lang: lang,
+      voice_id:    voiceKey,
+      provider,
+      report:      resolvePath(reportPath),
+    },
+  };
+  const variantPath = join('./clips', slug, clipId, 'edit.dub-' + lang + '.json');
+  mkdirSync(dirname(variantPath), { recursive: true });
+  writeFileSync(variantPath, JSON.stringify(out, null, 2) + '\n');
+  return variantPath;
+}

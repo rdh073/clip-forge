@@ -40,6 +40,8 @@ ClipForge is closing.
 | Brand vocabulary (custom dictionary) | ✅        | ✅       |
 | **Prompt-based clipping**            | **✅**    | ✅       |
 | **Hook overlay + progress bar**      | **✅**    | ✅       |
+| **Voice cloning (hook / outro / dub)** | **✅**  | ✅       |
+| **Multi-language dub**               | **✅**    | partial  |
 
 Pillar (a) Filler-word & pause removal landed as `/clip-forge:tighten` —
 locale-aware filler dicts (en + id), silence detection, plan invariants,
@@ -67,6 +69,23 @@ brand / product / proper-noun terms; transcripts run a case-restore
 post-pass so "clipforge", "Clip-Forge", or "Clipforge!" all canonicalise
 to the casing in `vocab.json`. Hallucination-guarded — a silent input
 stays silent. See [skills/transcribe/SKILL.md](skills/transcribe/SKILL.md).
+
+v0.4.0 Pillar 2 — Multi-language dub + voice clone landed as
+`/clip-forge:voice-clone` and `/clip-forge:dub`. Voice clone uploads a
+30-second sample from `source.mp4` to the configured TTS provider
+(ElevenLabs → Cartesia → Groq PlayAI → Piper local) and saves the
+returned `voice_id` in `voices.json` (per-project `./uploads/<slug>/`
+wins over global `~/.clip-forge/`). Dub translates the transcript and
+synthesizes timeline-aligned WAVs per target language, emits
+`dubbed-<lang>.wav` + `dub_report-<lang>.json` + per-language
+`edit.dub-<lang>.json` variants ready for render. Every paid call is
+budget-tracked in `render_manifest.json.ai_costs` against
+`CF_AI_BUDGET_USD` (default $10 — 80 % checkpoint, 100 % hard-stop).
+edit.json gains optional `prepend_audio` / `append_audio` fields so the
+render skill can mux a hook/outro stinger via the same TTS abstraction
+without re-writing `audio_source`. See
+[skills/voice-clone/SKILL.md](skills/voice-clone/SKILL.md) and
+[skills/dub/SKILL.md](skills/dub/SKILL.md).
 
 Pillar (i) Hook overlay + progress bar + emoji caption burn + aspect
 profiles + VTT/SRT sidecars closes the *visual* parity gap with OpusClip.
@@ -147,6 +166,29 @@ Expected provider output is `cuda cuda`. If either provider falls back to
 `cpu`, inspect `detector_provider_fallback_reason` or
 `landmark_provider_fallback_reason` in the generated crop path.
 
+## 🔑 BYO API Keys (Optional Tier 2 Features)
+
+ClipForge ships local-first. Tier 2 features require your own API
+keys and bill directly from those providers (ClipForge takes nothing):
+
+| Feature                  | Provider              | ~Cost per clip |
+|--------------------------|-----------------------|----------------|
+| Voice clone hook/outro   | ElevenLabs            | ~$0.05         |
+| Multi-lang dub (5 langs) | ElevenLabs + Groq     | ~$0.30         |
+| AI B-roll fallback       | fal.ai                | ~$0.20         |
+| Avatar stinger           | HeyGen                | ~$1.00         |
+| Prompt-driven re-edit    | Groq (or Claude)      | ~$0.001        |
+
+Set `CF_AI_BUDGET_USD=N` to cap total per pipeline (default `$10`).
+Local fallback: Piper TTS (offline, no voice clone, generic voice) —
+install via `node bin/install-models.mjs --piper`.
+
+The TTS-related precedence (`/clip-forge:voice-clone` and
+`/clip-forge:dub`) walks down the list `ELEVENLABS_API_KEY →
+CARTESIA_API_KEY → GROQ_API_KEY → Piper local`. Override the resolver
+with `CF_TTS_PROVIDER=<name>`. Missing every key + missing Piper degrades
+gracefully — the skill exits 0 with a structured warning, no crash.
+
 ## Install
 
 > **Marketplace status:** ClipForge isn't on the official Claude Code marketplace yet.
@@ -182,6 +224,11 @@ alternative (e.g. Whisper instead of Deepgram) or is skipped with a warning.
 | `TIKTOK_CLIENT_KEY` + `TIKTOK_CLIENT_SECRET` | TikTok upload | `/clip-forge:publish tiktok` |
 | `YT_CLIENT_ID` + `YT_CLIENT_SECRET` | YouTube Shorts upload | `/clip-forge:publish youtube` |
 | `IG_APP_ID` + `IG_APP_SECRET` | Instagram Reels upload | `/clip-forge:publish instagram` |
+| `ELEVENLABS_API_KEY` | Voice clone + multilingual TTS | `/clip-forge:voice-clone`, `/clip-forge:dub` (degrades to Cartesia → Groq → Piper local) |
+| `CARTESIA_API_KEY` | Low-latency TTS (voice clone) | same — second in precedence |
+| `GROQ_API_KEY` | Cheap generic-voice TTS (no clone) | same — third in precedence |
+| `CF_TTS_PROVIDER` | Force a specific TTS adapter | overrides precedence; `elevenlabs\|cartesia\|groq\|piper` |
+| `CF_AI_BUDGET_USD` | Cumulative paid-skill cost cap | default `10.00`; 80 % checkpoint + 100 % hard-stop |
 
 ## Quickstart
 
@@ -217,6 +264,8 @@ Pass `--yolo` to skip every approval gate and ship 10 clips unattended:
 | `/clip-forge:broll`        | Pexels stock cutaways matched to each sentence |
 | `/clip-forge:music`        | Royalty-free music bed with auto-ducking under speech |
 | `/clip-forge:render`       | Final 9:16 1080×1920 MP4 per clip (ffmpeg presets) |
+| `/clip-forge:voice-clone`  | Upload a 30 s sample to ElevenLabs/Cartesia/Groq/Piper; save `voice_id` to `voices.json` |
+| `/clip-forge:dub`          | Translate + TTS-dub the transcript into N languages; emit per-lang `edit.dub-<lang>.json` |
 | `/clip-forge:publish`      | Post to TikTok, Reels, Shorts, X |
 | `/clip-forge:schedule`     | Queue posts for later; monitor drains the queue |
 | `/clip-forge:analytics`    | Per-clip views, watch-time, retention report |

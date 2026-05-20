@@ -163,6 +163,35 @@
         "vtt": { "type": ["string", "null"] },
         "srt": { "type": ["string", "null"] }
       }
+    },
+    "ai_costs": {
+      "type": ["object", "null"],
+      "description": "v0.4.0 pillar 2 — cumulative AI spend across the skill chain that produced this render. Mirrors render_manifest.json.ai_costs at the moment the renderer ran. Null when no paid skills participated.",
+      "additionalProperties": false,
+      "properties": {
+        "total_usd":        { "type": "number", "minimum": 0 },
+        "breakdown":        { "type": "object" },
+        "budget_cap_usd":   { "type": "number", "minimum": 0 },
+        "budget_used_pct":  { "type": "number", "minimum": 0 },
+        "budget_exhausted": { "type": "boolean" },
+        "skipped_clips": {
+          "type": "array",
+          "items": { "type": "object" }
+        }
+      }
+    },
+    "tts_provider_used": {
+      "type": ["string", "null"],
+      "description": "v0.4.0 pillar 2 — name of the TTS provider that synthesized any prepend_audio/append_audio TTS chunks during this render. Null when no TTS happened."
+    },
+    "tts_nondeterministic": {
+      "type": "boolean",
+      "description": "v0.4.0 pillar 2 — true when any TTS call participated in this render. Determinism gate (CF_RENDER_DETERMINISTIC) honors this — see skills/render/SKILL.md 'Reproducibility'."
+    },
+    "dub_languages": {
+      "type": "array",
+      "description": "v0.4.0 pillar 2 — target languages produced for this clip via /clip-forge:dub. Empty array when dub did not run.",
+      "items": { "type": "string" }
     }
   }
 }

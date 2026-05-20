@@ -22,13 +22,15 @@
 //   node bin/install-models.mjs --force               # redownload everything
 //   node bin/install-models.mjs --quiet               # JSON events only
 
-import { existsSync, statSync, mkdirSync, writeFileSync, readFileSync, createReadStream } from 'node:fs';
+import { existsSync, statSync, mkdirSync, writeFileSync, readFileSync, createReadStream, chmodSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(fileURLToPath(import.meta.url), '../..');
 const MODELS_DIR = join(ROOT, 'bin', 'models');
+const PIPER_HOME = join(homedir(), '.clip-forge', 'piper');
 
 const PFLD_DEFAULT_URL = 'https://raw.githubusercontent.com/cunjian/pytorch_face_landmark/master/onnx/pfld.onnx';
 const PFLD_PINNED_SHA256 = '7d7bbd5c6a1d9272e58d9773898284a1905d872eba9a662df9b5f20f1ba6f83e';
@@ -74,6 +76,8 @@ const MODELS = [
 const args = new Set(process.argv.slice(2));
 const FORCE = args.has('--force');
 const QUIET = args.has('--quiet');
+const PIPER = args.has('--piper');
+const ONLY_PIPER = args.has('--piper-only');
 
 function log(...a) { if (!QUIET) process.stderr.write('[install-models] ' + a.join(' ') + '\n'); }
 function logJSON(obj) { if (!QUIET) process.stdout.write(JSON.stringify(obj) + '\n'); }
@@ -137,11 +141,97 @@ async function installOne(model) {
   }
 }
 
+// ----- v0.4.0 pillar 2 — Piper TTS local fallback installer -----
+//
+// Fetches the Piper release tarball for the host architecture into
+// ~/.clip-forge/piper/ and stages one generic English voice (~50 MB total)
+// so the dub skill can degrade to a working offline TTS path. Skipped
+// unless --piper or --piper-only is passed.
+//
+// Tarball URLs are pinned to a release tag for reproducibility; if the URL
+// returns 404, the installer logs a soft warning rather than failing — the
+// dub skill's graceful-degrade contract handles a missing binary.
+
+const PIPER_RELEASES = 'https://github.com/rhasspy/piper/releases/download/2023.11.14-2';
+const PIPER_ASSET_BY_PLATFORM = {
+  'linux-x64':   'piper_linux_x86_64.tar.gz',
+  'linux-arm64': 'piper_linux_aarch64.tar.gz',
+  'darwin-x64':  'piper_macos_x64.tar.gz',
+  'darwin-arm64': 'piper_macos_aarch64.tar.gz',
+};
+const PIPER_VOICE_NAME = 'en_US-lessac-medium';
+const PIPER_VOICE_BASE = 'https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/';
+
+function platformKey() {
+  const p = process.platform === 'darwin' ? 'darwin' : 'linux';
+  const a = process.arch === 'arm64' ? 'arm64' : 'x64';
+  return p + '-' + a;
+}
+
+async function downloadIfMissing(url, dest, minBytes) {
+  if (existsSync(dest) && statSync(dest).size >= (minBytes || 1024)) return false;
+  log('downloading', dest, '←', url);
+  await download(url, dest);
+  return true;
+}
+
+async function installPiper() {
+  mkdirSync(PIPER_HOME, { recursive: true });
+  const key = platformKey();
+  const asset = PIPER_ASSET_BY_PLATFORM[key];
+  if (!asset) {
+    log('⚠ unsupported platform for Piper:', key);
+    logJSON({ event: 'piper_install', ok: false, reason: 'unsupported_platform', platform: key });
+    return { ok: false };
+  }
+  const url = PIPER_RELEASES + '/' + asset;
+  const tarPath = join(PIPER_HOME, asset);
+  try {
+    await downloadIfMissing(url, tarPath, 1_000_000);
+  } catch (e) {
+    log('⚠ piper download failed:', e.message);
+    logJSON({ event: 'piper_install', ok: false, reason: 'binary_download_failed', detail: e.message });
+    return { ok: false };
+  }
+  // Unpack with system tar — Node has no built-in tar reader, and tar is
+  // a hard prereq of every Linux/macOS box ClipForge supports.
+  const tar = await import('node:child_process').then((m) => m.spawnSync);
+  const r = tar('tar', ['-xzf', tarPath, '-C', PIPER_HOME, '--strip-components=1']);
+  if (r.status !== 0) {
+    log('⚠ piper untar failed; bundle left at', tarPath);
+    logJSON({ event: 'piper_install', ok: false, reason: 'untar_failed' });
+    return { ok: false };
+  }
+  const piperBin = join(PIPER_HOME, 'piper');
+  if (existsSync(piperBin)) {
+    try { chmodSync(piperBin, 0o755); } catch {}
+  }
+  // Stage one English voice model + its .json sidecar.
+  const voicesDir = join(PIPER_HOME, 'voices');
+  mkdirSync(voicesDir, { recursive: true });
+  const onnxDst = join(voicesDir, PIPER_VOICE_NAME + '.onnx');
+  const jsonDst = join(voicesDir, PIPER_VOICE_NAME + '.onnx.json');
+  try {
+    await downloadIfMissing(PIPER_VOICE_BASE + PIPER_VOICE_NAME + '.onnx',      onnxDst, 50_000_000);
+    await downloadIfMissing(PIPER_VOICE_BASE + PIPER_VOICE_NAME + '.onnx.json', jsonDst, 1_000);
+  } catch (e) {
+    log('⚠ piper voice download failed:', e.message);
+  }
+  logJSON({ event: 'piper_install', ok: true, home: PIPER_HOME, bin: piperBin, voice: onnxDst });
+  return { ok: true };
+}
+
 (async () => {
   mkdirSync(MODELS_DIR, { recursive: true });
   const results = [];
-  for (const m of MODELS) results.push(await installOne(m));
-  const ok = results.every((r) => r.status === 'cached' || r.status === 'installed');
+  if (!ONLY_PIPER) {
+    for (const m of MODELS) results.push(await installOne(m));
+  }
+  if (PIPER || ONLY_PIPER) {
+    const r = await installPiper();
+    results.push({ name: 'piper', status: r.ok ? 'installed' : 'skipped' });
+  }
+  const ok = results.every((r) => r.status === 'cached' || r.status === 'installed' || r.status === 'skipped');
   logJSON({ event: 'summary', ok, results });
   process.exit(ok ? 0 : 4);
 })();

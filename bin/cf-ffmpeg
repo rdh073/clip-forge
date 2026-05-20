@@ -16,7 +16,7 @@
 // docs/bench-v0.2.0.md for why we don't use ffmpeg sendcmd here.
 
 import { spawn, spawnSync } from 'node:child_process';
-import { readFileSync, existsSync, mkdirSync, writeFileSync, unlinkSync, statSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, writeFileSync, unlinkSync, statSync, renameSync } from 'node:fs';
 import { dirname, resolve as resolvePath, join, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -31,6 +31,8 @@ import {
   buildProgressBarDrawbox,
 } from './lib/overlay-builder.mjs';
 import { buildVtt, buildSrt } from './lib/srt-vtt.mjs';
+import { synthesize as ttsSynthesize } from './lib/tts.mjs';
+import { loadManifest, snapshotForReport } from './lib/budget.mjs';
 
 const GRAPH_SIZE_WARN_BYTES = 8192;
 
@@ -459,6 +461,109 @@ export function planSpliceArgs({ crop, source, output, startMs, endMs, captionsP
   };
 }
 
+// ----- v0.4.0 pillar 2: prepend / append audio (hook/outro TTS) -----
+//
+// Lazy-resolves a `{ tts: { text, voice_id, provider? } } | { audio_path }`
+// spec to a WAV path on disk. TTS results are cached next to the output mp4
+// so re-renders reuse them; the cache key is the TTS request shape (text +
+// voice_id + provider).
+//
+// Returns { audio_path: string|null, fallback_used?, fallback_reason?,
+//           cost_usd, provider_used, was_tts: boolean }
+async function resolveStingerAudio(spec, { outputDir, kind }) {
+  if (!spec || typeof spec !== 'object') return { audio_path: null };
+  if (spec.audio_path) {
+    if (existsSync(spec.audio_path)) return { audio_path: spec.audio_path };
+    return { audio_path: null, fallback_used: true, fallback_reason: kind + '_audio_path_missing' };
+  }
+  if (!spec.tts || !spec.tts.text) return { audio_path: null };
+  const cachePath = join(outputDir, basename(outputDir) + '.' + kind + '.wav');
+  // Caching: if the WAV already exists and a sidecar manifest matches the
+  // request, reuse. We keep this very thin — the cache file is named per
+  // `kind`, and the sibling `.spec.json` carries the request hash.
+  const sidecar = cachePath + '.spec.json';
+  const reqShape = { text: spec.tts.text, voice_id: spec.tts.voice_id || null,
+                      provider: spec.tts.provider || null };
+  if (existsSync(cachePath) && existsSync(sidecar)) {
+    try {
+      const prev = JSON.parse(readFileSync(sidecar, 'utf-8'));
+      if (prev && JSON.stringify(prev.req) === JSON.stringify(reqShape)) {
+        return { audio_path: cachePath, was_tts: true, provider_used: prev.provider_used,
+                 cost_usd: prev.cost_usd || 0, cached: true };
+      }
+    } catch { /* fall through to re-synth */ }
+  }
+  mkdirSync(outputDir, { recursive: true });
+  const r = await ttsSynthesize({
+    text:       spec.tts.text,
+    voice_id:   spec.tts.voice_id,
+    provider:   spec.tts.provider,
+    audio_path: cachePath,
+  });
+  if (r.fallback_used) {
+    return { audio_path: null, fallback_used: true,
+              fallback_reason: r.fallback_reason, provider_used: r.provider_used };
+  }
+  try {
+    writeFileSync(sidecar, JSON.stringify({
+      req: reqShape, provider_used: r.provider_used, cost_usd: r.cost_usd,
+      duration_ms: r.duration_ms,
+    }, null, 2));
+  } catch { /* sidecar is best-effort */ }
+  return {
+    audio_path:    r.audio_path,
+    cost_usd:      r.cost_usd || 0,
+    provider_used: r.provider_used,
+    was_tts:       true,
+  };
+}
+
+// Build an mp4 from a still frame + an audio wav. Used to materialise
+// prepend/append stingers as concat-compatible mp4s before muxing.
+async function buildStingerMp4({ audioPath, outputMp4, canvasW, canvasH }) {
+  if (!audioPath || !existsSync(audioPath)) return false;
+  const args = [
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-f', 'lavfi',
+    '-i', 'color=c=black:s=' + canvasW + 'x' + canvasH + ':r=30',
+    '-i', audioPath,
+    '-shortest',
+    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'fast', '-crf', '22',
+    '-c:a', 'aac', '-b:a', '192k',
+    '-movflags', '+faststart',
+    outputMp4,
+  ];
+  const r = spawnSync('ffmpeg', args);
+  return r.status === 0;
+}
+
+async function concatMp4s(parts, outPath) {
+  // ffmpeg concat demuxer needs a list file. Re-encode is safest given the
+  // parts may have differing GOP structure.
+  const listFile = outPath + '.concat-list.txt';
+  const listBody = parts.map((p) => "file '" + p.replace(/'/g, "'\\''") + "'").join('\n') + '\n';
+  writeFileSync(listFile, listBody);
+  try {
+    const args = [
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-f', 'concat', '-safe', '0',
+      '-i', listFile,
+      '-c:v', 'libx264', '-preset', 'fast', '-crf', '20',
+      '-pix_fmt', 'yuv420p',
+      '-c:a', 'aac', '-b:a', '192k',
+      '-movflags', '+faststart',
+      outPath,
+    ];
+    const r = spawnSync('ffmpeg', args);
+    if (r.status !== 0) {
+      const tail = (r.stderr ? r.stderr.toString().split('\n').slice(-5).join(' | ') : 'exit ' + r.status);
+      throw new Error('concat failed: ' + tail);
+    }
+  } finally {
+    try { unlinkSync(listFile); } catch {}
+  }
+}
+
 async function render({ manifest }) {
   const m = JSON.parse(readFileSync(manifest, 'utf-8'));
   // Source path: explicit m.source wins, else infer from ./clips/<slug>/... convention.
@@ -666,6 +771,55 @@ async function render({ manifest }) {
       die('render: produced zero-byte output (no file left on disk)');
     }
 
+    // ----- v0.4.0 pillar 2: prepend / append stingers (hook/outro TTS) -----
+    // ttsProviderUsed + ttsNondeterministic are declared at the render()
+    // function scope (see below at the report-build call site) — the
+    // existing v0.3.0 callers don't carry them, so they default to
+    // null/false. v0.4.0 paths populate them inside this block.
+    var ttsProviderUsed = null;
+    var ttsNondeterministic = false;
+    const stingerWarnings = [];
+    if (m.prepend_audio || m.append_audio) {
+      const outDir = dirname(m.output);
+      const preRes  = await resolveStingerAudio(m.prepend_audio, { outputDir: outDir, kind: 'prepend' });
+      const postRes = await resolveStingerAudio(m.append_audio,  { outputDir: outDir, kind: 'append'  });
+      if (preRes.fallback_used)  stingerWarnings.push({ code: 'prepend_audio_skipped', message: preRes.fallback_reason });
+      if (postRes.fallback_used) stingerWarnings.push({ code: 'append_audio_skipped',  message: postRes.fallback_reason });
+      if (preRes.was_tts || postRes.was_tts) {
+        ttsNondeterministic = true;
+        ttsProviderUsed = preRes.provider_used || postRes.provider_used || null;
+      }
+      const parts = [];
+      const tmpStingers = [];
+      if (preRes.audio_path) {
+        const stingerMp4 = join(tmpdir(), 'cf-prepend-' + process.pid + '-' + Date.now() + '.mp4');
+        const ok = await buildStingerMp4({ audioPath: preRes.audio_path, outputMp4: stingerMp4,
+                                             canvasW: canvas.w, canvasH: canvas.h });
+        if (ok) { parts.push(stingerMp4); tmpStingers.push(stingerMp4); }
+        else stingerWarnings.push({ code: 'prepend_stinger_build_failed', message: 'ffmpeg failed to build prepend stinger' });
+      }
+      parts.push(m.output);
+      if (postRes.audio_path) {
+        const stingerMp4 = join(tmpdir(), 'cf-append-' + process.pid + '-' + Date.now() + '.mp4');
+        const ok = await buildStingerMp4({ audioPath: postRes.audio_path, outputMp4: stingerMp4,
+                                             canvasW: canvas.w, canvasH: canvas.h });
+        if (ok) { parts.push(stingerMp4); tmpStingers.push(stingerMp4); }
+        else stingerWarnings.push({ code: 'append_stinger_build_failed', message: 'ffmpeg failed to build append stinger' });
+      }
+      if (parts.length > 1) {
+        const combined = m.output + '.with-stingers.mp4';
+        try {
+          await concatMp4s(parts, combined);
+          renameSync(combined, m.output);
+        } catch (e) {
+          stingerWarnings.push({ code: 'stinger_concat_failed', message: e.message });
+          try { unlinkSync(combined); } catch {}
+        }
+      }
+      for (const f of tmpStingers) { try { unlinkSync(f); } catch {} }
+      for (const w of stingerWarnings) renderWarnings.push(w);
+    }
+
     // ----- emit VTT + SRT sidecars (pillar (i) — best-effort) -----
     const sidecars = emitSidecars({
       captionsJsonPath: m.captions_json,
@@ -744,6 +898,24 @@ async function render({ manifest }) {
       }
     }
 
+    // v0.4.0 pillar 2 — populate ai_costs from render_manifest.json (if any)
+    // and dub_languages from edit.json.dub or sibling dub_report files.
+    let aiCostsSnapshot = null;
+    let dubLanguages = [];
+    if (m.slug || m.render_manifest) {
+      const mfPath = m.render_manifest || (m.slug ? join('./renders', m.slug, 'render_manifest.json') : null);
+      if (mfPath && existsSync(mfPath)) {
+        try {
+          const mf = loadManifest(mfPath, { slug: m.slug });
+          aiCostsSnapshot = snapshotForReport(mf);
+        } catch { /* best-effort */ }
+      }
+    }
+    if (m.dub && m.dub.target_lang) dubLanguages.push(m.dub.target_lang);
+    if (Array.isArray(m.dub_languages)) {
+      for (const l of m.dub_languages) if (!dubLanguages.includes(l)) dubLanguages.push(l);
+    }
+
     const report = buildRenderReport({
       clipId: m.clip_id ?? null,
       renderMode,
@@ -761,6 +933,10 @@ async function render({ manifest }) {
       targetAspect: canvas.name,
       overlays: (overlayTelemetry.hook || overlayTelemetry.progress_bar) ? overlayTelemetry : null,
       sidecars,
+      aiCosts: aiCostsSnapshot,
+      ttsProviderUsed,
+      ttsNondeterministic,
+      dubLanguages,
     });
     writeRenderReport(report, reportPath);
 
