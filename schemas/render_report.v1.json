@@ -219,6 +219,29 @@
           }
         }
       }
+    },
+    "rerender": {
+      "type": ["object", "null"],
+      "description": "v0.4.0 pillar 4 — populated by cf-edit when this render was triggered through the content-hash diff. Null when the render was launched directly (one-off, not through /clip-forge:edit).",
+      "additionalProperties": false,
+      "properties": {
+        "reason":        { "type": ["string", "null"],
+                            "description": "force | cold_start | manual | input_changed:<csv>" },
+        "stale_keys":    { "type": "array", "items": { "type": "string" } },
+        "manifest_path": { "type": ["string", "null"] }
+      }
+    },
+    "llm": {
+      "type": ["object", "null"],
+      "description": "v0.4.0 pillar 4 — populated by cf-edit when the prompt-mode LLM patch path participated. Null otherwise.",
+      "additionalProperties": false,
+      "properties": {
+        "patch_applied":   { "type": "boolean" },
+        "provider_used":   { "type": ["string", "null"] },
+        "retry_count":     { "type": "integer", "minimum": 0 },
+        "rejected_reason": { "type": ["string", "null"] },
+        "cost_usd":        { "type": "number", "minimum": 0 }
+      }
     }
   }
 }

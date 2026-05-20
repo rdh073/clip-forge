@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "render_manifest.v1",
+  "title": "ClipForge render manifest v1",
+  "description": "Per-project lockfile at ./renders/<slug>/render_manifest.json. Two top-level concerns: (1) clip-level input-hash diff for cf-edit partial re-render (pillar 4); (2) cumulative ai_costs across the skill chain (pillar 2). Both pillars write to the SAME file additively — cf-edit MUST preserve any existing ai_costs block byte-for-byte modulo additive breakdown keys.",
+  "type": "object",
+  "required": ["version", "slug"],
+  "additionalProperties": true,
+  "properties": {
+    "version": { "const": 1 },
+    "schema":  { "const": "render_manifest.v1" },
+    "slug":    { "type": ["string", "null"] },
+    "created_at":      { "type": ["string", "null"] },
+    "rendered_at":     { "type": ["string", "null"] },
+    "clipforge_version": { "type": ["string", "null"] },
+    "clips": {
+      "type": "object",
+      "description": "Pillar 4 — per-clip input hashes + rendered output sha256. Keys are clip_id (e.g. 'c01').",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["output", "input_hashes"],
+        "additionalProperties": true,
+        "properties": {
+          "output":          { "type": "string" },
+          "rendered_at":     { "type": ["string", "null"] },
+          "rendered_sha256": { "type": ["string", "null"] },
+          "rerender_reason": { "type": ["string", "null"] },
+          "input_hashes": {
+            "type": "object",
+            "description": "sha256: prefixed hashes of every input the renderer consumes. Missing inputs map to null. Adding fields is ADDITIVE — older readers ignore new keys.",
+            "additionalProperties": { "type": ["string", "null"] }
+          }
+        }
+      }
+    },
+    "ai_costs": {
+      "type": "object",
+      "description": "Pillar 2 — cumulative spend across the skill chain. cf-edit MUST preserve this block byte-for-byte modulo additive breakdown keys (groq_llm, anthropic_llm, anthropic_translate added in pillar 4).",
+      "additionalProperties": true
+    }
+  }
+}

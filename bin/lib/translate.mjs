@@ -1,21 +1,16 @@
 // translate.mjs — multilingual transcript translation for /clip-forge:dub.
 //
 // Provider precedence (PLAN §3.2 pipeline step 2):
-//   GROQ_API_KEY     → Groq Llama 3.3 70B (cheap)
-//   ANTHROPIC_API_KEY → Claude Haiku 4.5 (fallback)
-//   none + CF_WHISPER on PATH → local Whisper --task translate (offline)
-//   none of the above → fallback_used: no_translate_provider
+//   CF_TRANSLATE_PROVIDER=<name> → explicit override (groq | anthropic)
+//   GROQ_API_KEY      set        → Groq Llama 3.3 70B  (default, ~$0.0001/clip)
+//   ANTHROPIC_API_KEY set        → Claude Haiku 4.5    (fallback, ~$0.001/clip)
+//   none of the above            → fallback_used: no_translate_provider
 //
-// Mock injection (testing): CF_TRANSLATE_MOCK=<path> reads a JSON brief
-// {transcript, target_lang, source_lang} on stdin, prints the translated
-// transcript JSON on stdout. The mock MUST preserve per-word start_ms /
-// end_ms timing (realistic-mock contract — PLAN §4).
-//
-// The lib does NOT spawn the real LLM in pillar 2; the LLM-call shape is
-// stubbed so pillar 4 (cf-edit) can extend it. Pillar 2 only needs the
-// mock path to be green and the real path to fall back honestly. This
-// matches the docs/PLAN-v0.4.0.md §3.2 step 2 invariant: "Key absent →
-// translation written; dub skipped with warning."
+// Pillar 4 (cf-edit) completed the Anthropic path that was stubbed in
+// pillar 2 — both providers now hit real-network in production. Mock
+// injection (CF_TRANSLATE_MOCK=<path>) still bypasses everything for tests.
+// Per-word start_ms / end_ms timing is preserved across the LLM call via
+// reattachTiming() — sentence-level fidelity is the contract.
 
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -85,17 +80,12 @@ export async function translateTranscript({ transcript, source_lang, target_lang
   if (!resolved) {
     return { fallback_used: true, fallback_reason: 'no_translate_provider', cost_usd: 0 };
   }
-  if (resolved === 'groq') {
-    return await translateViaGroq(brief);
-  }
-  // Anthropic real-network path deferred until pillar 4 lands; Groq is the
-  // primary cheap provider that unblocks production dub today.
+  if (resolved === 'groq')      return await translateViaGroq(brief);
+  if (resolved === 'anthropic') return await translateViaAnthropic(brief);
   return {
     fallback_used:   true,
-    fallback_reason: 'translate_provider_not_wired',
-    detail:          'pillar 2 wires only Groq for the real-network path; ' +
-                     'Anthropic Claude lands with pillar 4 cf-edit. Set ' +
-                     'GROQ_API_KEY for production dub, or CF_TRANSLATE_MOCK for tests.',
+    fallback_reason: 'translate_provider_unknown',
+    detail:          'unknown provider: ' + resolved,
     cost_usd:        0,
     provider_used:   resolved,
   };
@@ -191,6 +181,86 @@ async function translateViaGroq(brief) {
                   text: translatedText },
     cost_usd:      Number(costUsd.toFixed(6)),
     provider_used: 'groq',
+  };
+}
+
+async function translateViaAnthropic(brief) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    return { fallback_used: true, fallback_reason: 'anthropic_key_missing', cost_usd: 0,
+             provider_used: 'anthropic' };
+  }
+  const tx       = brief.transcript || {};
+  const words    = Array.isArray(tx.words) ? tx.words : [];
+  const sourceText = words.map((w) => w.w || '').join(' ').trim();
+  if (!sourceText) {
+    return { transcript: { ...tx, language: brief.target_lang, words: [], text: '' },
+             cost_usd: 0, provider_used: 'anthropic' };
+  }
+  const sysPrompt =
+    'You translate transcripts. The user gives you a text in ' + (brief.source_lang || 'en') +
+    '. Translate it to ' + brief.target_lang + '. Reply with STRICT JSON only: ' +
+    '{"translated": "<the translation>"}. Preserve punctuation. ' +
+    'Do not add commentary, do not wrap in markdown.';
+  let r;
+  try {
+    r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key':         apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type':      'application/json',
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        system: sysPrompt,
+        messages: [{ role: 'user', content: sourceText }],
+        max_tokens: 2048,
+        temperature: 0,
+      }),
+    });
+  } catch (e) {
+    return { fallback_used: true, fallback_reason: 'anthropic_network_error',
+             detail: e.message, cost_usd: 0, provider_used: 'anthropic' };
+  }
+  if (!r.ok) {
+    return { fallback_used: true, fallback_reason: 'anthropic_http_' + r.status,
+             detail: (await r.text()).slice(0, 240), cost_usd: 0, provider_used: 'anthropic' };
+  }
+  let body;
+  try { body = await r.json(); }
+  catch (e) {
+    return { fallback_used: true, fallback_reason: 'anthropic_invalid_json',
+             detail: e.message, cost_usd: 0, provider_used: 'anthropic' };
+  }
+  const blocks = Array.isArray(body.content) ? body.content : [];
+  const raw = blocks.filter((b) => b && b.type === 'text').map((b) => b.text || '').join('').trim();
+  if (!raw) {
+    return { fallback_used: true, fallback_reason: 'anthropic_empty_translation',
+             cost_usd: 0, provider_used: 'anthropic' };
+  }
+  let payload;
+  try { payload = JSON.parse(raw); }
+  catch (e) {
+    return { fallback_used: true, fallback_reason: 'anthropic_payload_invalid_json',
+             detail: e.message + ' :: ' + raw.slice(0, 240), cost_usd: 0,
+             provider_used: 'anthropic' };
+  }
+  const translatedText = String(payload.translated || '').trim();
+  if (!translatedText) {
+    return { fallback_used: true, fallback_reason: 'anthropic_empty_translation',
+             cost_usd: 0, provider_used: 'anthropic' };
+  }
+  const tokens = translatedText.split(/\s+/).filter(Boolean);
+  const translatedWords = reattachTiming(words, tokens);
+  const usage = body.usage || {};
+  const costUsd = ((usage.input_tokens || 0) + (usage.output_tokens || 0)) / 1_000_000
+                  * ANTHROPIC_COST_PER_M_TOKENS_USD;
+  return {
+    transcript: { ...tx, language: brief.target_lang, words: translatedWords,
+                  text: translatedText },
+    cost_usd:      Number(costUsd.toFixed(6)),
+    provider_used: 'anthropic',
   };
 }
 

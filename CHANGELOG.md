@@ -5,6 +5,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — v0.4.0 pillar 4: cf-edit (partial re-render) + prompt-driven re-edit + Anthropic translate completion
+
+- New `/clip-forge:edit` skill + `bin/cf-edit` dispatcher. Two modes:
+  - **Diff mode (default)** — content-hash diff against
+    `./renders/<slug>/render_manifest.json`. Hashes six inputs per clip
+    (`edit_json`, `crop_path`, `captions_ass`, `cuts_plan`,
+    `audio_source`, `brand_kit`); stale clips re-render via
+    `cf-ffmpeg render`, fresh clips skip. Manifest writes are atomic
+    (write-then-rename with `fsync`). Flags: `--slug`, `--force`,
+    `--dry-run`, `--only c01,c03`. Invariants E1–E7 from PLAN-v0.4.0
+    §3.4 enforced.
+  - **Prompt mode (`--prompt "<text>"`)** — LLM emits RFC 6902 JSON
+    patch against `edit.json`; three-layer validation (schema +
+    whitelist + dry-run preview) before apply; one retry on validation
+    failure then manual fallback. `--auto-apply` / `--yolo` skips the
+    preview gate.
+- New pure-logic library `bin/lib/llm.mjs` — dispatcher mirroring the
+  `tts.mjs` shape from pillar 2. Provider precedence per PLAN-v0.4.0
+  §7 Q6: `CF_LLM_PROVIDER=<name>` override → `GROQ_API_KEY` →
+  `ANTHROPIC_API_KEY` → graceful `no_llm_provider` fallback. Adapter
+  files: `bin/lib/llm/groq.mjs` (llama-3.3-70b-versatile, JSON-mode,
+  ~$0.001/edit) and `bin/lib/llm/anthropic.mjs` (claude-haiku-4-5,
+  ~$0.02/edit). Mock injection via `CF_LLM_MOCK=<path>` mirrors
+  `CF_TTS_MOCK` / `CF_TRANSLATE_MOCK`.
+- New pure-logic library `bin/lib/render-manifest.mjs` — sha256 input
+  hashing, `diffClips` (cold-start, no-change, mid-change),
+  `saveManifestAtomic` (write `<path>.tmp`, `fsync`, rename). Loads /
+  saves preserve the pillar-2 `ai_costs` block byte-for-byte modulo
+  additive breakdown keys (`groq_llm`, `anthropic_llm`,
+  `anthropic_translate`). `recordClipRender` upserts a clip entry with
+  `output`, `input_hashes`, `rendered_sha256`, `rerender_reason`.
+- New pure-logic library `bin/lib/edit-patch.mjs` — JSON-patch
+  validator (RFC 6902 ops + the schema at
+  `schemas/edit-patch.v1.json`), whitelist enforcement, applier (no
+  external deps), and `summarisePatch` helper for the preview gate.
+  Editable JSON Pointer whitelist: `/cuts`, `/hook_overlay/*`,
+  `/progress_bar/*`, `/target_aspect`, `/brand_kit`, `/watermark`.
+  FORBIDDEN: `/crop_path`, `/audio_source`, `/clip_id`, `/source`,
+  `/output`, `/version` — off-whitelist patches reject with
+  `rejected_reason: "off_whitelist"`.
+- `bin/lib/translate.mjs` extended with the real-network Anthropic
+  adapter that pillar 2 deferred. Provider precedence updated to honor
+  `CF_TRANSLATE_PROVIDER=<name>` override. New fallback codes:
+  `anthropic_key_missing`, `anthropic_network_error`,
+  `anthropic_http_<status>`, `anthropic_invalid_json`,
+  `anthropic_payload_invalid_json`, `anthropic_empty_translation`.
+  Per-word `start_ms` / `end_ms` timing preserved via the shared
+  `reattachTiming()` helper.
+- `schemas/render_manifest.v1.json` (new) — formal contract for the
+  pillar-4 `clips` block + pillar-2 `ai_costs` block. `additionalProperties:
+  true` at the top level so forward extensions are non-breaking.
+- `schemas/edit-patch.v1.json` (new) — shape contract for the LLM patch
+  payload (`{patch: [...], warning: null}`).
+- `schemas/render_report.v1.json` extended additively with `rerender:
+  {reason, stale_keys, manifest_path}` and `llm: {patch_applied,
+  provider_used, retry_count, rejected_reason, cost_usd}` top-level
+  fields. Existing required-field list unchanged.
+- `config/llm-prompts/cf-edit-v1.md` (new) — versioned system prompt
+  for prompt-mode, documenting the editable whitelist + the
+  `{"patch": [], "warning": {"code": "ambiguous_prompt", ...}}` refusal
+  shape.
+- Tests: 41 unit (`bin/lib/llm.test.mjs` × 13 — precedence, override,
+  mock injection, no-keys; `bin/lib/render-manifest.test.mjs` × 15 —
+  hashing, diff, atomic write, ai_costs preservation;
+  `bin/lib/edit-patch.test.mjs` × 25 — schema + whitelist + applier;
+  `bin/lib/translate.test.mjs` × 9 — Anthropic adapter, precedence,
+  CF_TRANSLATE_PROVIDER override). 12 integration
+  (`tests/integration/cf-edit.test.mjs` × 7 — cold-start, idempotency
+  E4, partial re-render, --force E3, --dry-run E1, --only subset,
+  pillar-2 ai_costs preservation E7;
+  `tests/integration/cf-edit-prompt.test.mjs` × 5 — patch applied,
+  off-whitelist reject, retry-then-succeed, no-LLM-keys degrade,
+  composition gate hook+aspect on one clip while the other stays
+  untouched). 3 new live-gated translate-real cases for the Anthropic
+  path (skipped when `ANTHROPIC_API_KEY` unset).
+- Source: `docs/PLAN-v0.4.0.md` §3.4 + §7 Q5/Q6 + §10 decision log.
+
 ### Added — v0.4.0 pillar 3: brand kit / custom assets
 
 - New `~/.clip-forge/brand-kit.json` (global) / `./uploads/<slug>/brand-kit.json`

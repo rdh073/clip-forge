@@ -43,6 +43,8 @@ ClipForge is closing.
 | **Voice cloning (hook / outro / dub)** | **✅**  | ✅       |
 | **Multi-language dub**               | **✅**    | partial  |
 | **Brand kit / custom assets**        | **✅**    | ✅       |
+| **Partial re-render (cf-edit)**      | **✅**    | ✅       |
+| **Prompt-driven editing**            | **✅**    | ✅       |
 
 Pillar (a) Filler-word & pause removal landed as `/clip-forge:tighten` —
 locale-aware filler dicts (en + id), silence detection, plan invariants,
@@ -135,6 +137,63 @@ render proceeds with whatever IS available. SVG assets fall back when
 ffmpeg lacks librsvg (`librsvg_not_available` warning).
 
 See [skills/brand-kit/SKILL.md](skills/brand-kit/SKILL.md).
+
+## Partial re-render + prompt-driven editing (v0.4.0 pillar 4)
+
+`/clip-forge:edit` adds a content-hash diff against `./renders/<slug>/render_manifest.json`
+so only the clips whose inputs changed (edit.json, crop_path, captions.ass,
+cuts_plan, audio_source, brand_kit) are re-rendered. Hash mismatch → stale;
+matching hashes → skip. Two modes:
+
+```bash
+# Diff mode — re-render only changed clips (default)
+${CLAUDE_PLUGIN_ROOT}/bin/cf-edit --slug podcast-ep-42
+
+# Dry-run — print the stale set without rendering
+${CLAUDE_PLUGIN_ROOT}/bin/cf-edit --slug podcast-ep-42 --dry-run
+
+# Force a full re-render of one clip
+${CLAUDE_PLUGIN_ROOT}/bin/cf-edit --slug podcast-ep-42 --only c03 --force
+
+# Prompt mode — LLM emits an RFC 6902 patch against edit.json
+${CLAUDE_PLUGIN_ROOT}/bin/cf-edit --slug podcast-ep-42 \
+  --prompt "change hook text to 'NEW INTRO' and progress bar to red"
+```
+
+Prompt mode uses Groq Llama 3.3 70B by default (~$0.001/edit). Set
+`ANTHROPIC_API_KEY` and `CF_LLM_PROVIDER=anthropic` to force Claude Haiku
+4.5 fallback. With no LLM keys, diff mode still works — prompt mode exits
+gracefully with `fallback_reason: "no_llm_provider"`.
+
+Three-layer validation on every patch: (1) JSON Schema
+(`schemas/edit-patch.v1.json`), (2) whitelisted JSON Pointer paths only
+(`/hook_overlay/*`, `/progress_bar/*`, `/target_aspect`, `/brand_kit`,
+`/watermark`, `/cuts` — `/audio_source` and `/crop_path` are FORBIDDEN),
+(3) auto dry-run preview before apply. One retry on validation failure
+then manual fallback.
+
+The manifest write is atomic (write-then-rename with fsync). Pillar 2's
+`ai_costs` block is preserved byte-for-byte across cf-edit rewrites —
+new breakdown keys (`groq_llm`, `anthropic_llm`, `anthropic_translate`)
+are additive.
+
+See [skills/edit/SKILL.md](skills/edit/SKILL.md).
+
+## Anthropic translate fallback (v0.4.0 pillar 4)
+
+`/clip-forge:dub` translate path completes the Anthropic adapter that was
+stubbed in pillar 2. Provider precedence:
+
+```
+CF_TRANSLATE_PROVIDER=<name>  → explicit override (groq | anthropic)
+GROQ_API_KEY      set         → Groq Llama 3.3 70B  (~$0.0001/clip)
+ANTHROPIC_API_KEY set         → Claude Haiku 4.5    (~$0.001/clip)
+neither                        → fallback_reason: no_translate_provider
+```
+
+Per-word `start_ms` / `end_ms` timing is preserved via `reattachTiming()`
+across both providers. Live test coverage gates behind
+`CF_TRANSLATE_REAL_E2E=1` + the relevant API key.
 
 Pillar (i) Hook overlay + progress bar + emoji caption burn + aspect
 profiles + VTT/SRT sidecars closes the *visual* parity gap with OpusClip.
@@ -278,6 +337,8 @@ alternative (e.g. Whisper instead of Deepgram) or is skipped with a warning.
 | `GROQ_API_KEY` | Cheap generic-voice TTS (no clone) | same — third in precedence |
 | `CF_TTS_PROVIDER` | Force a specific TTS adapter | overrides precedence; `elevenlabs\|cartesia\|groq\|piper` |
 | `CF_AI_BUDGET_USD` | Cumulative paid-skill cost cap | default `10.00`; 80 % checkpoint + 100 % hard-stop |
+| `CF_LLM_PROVIDER` | Force LLM provider for cf-edit + translate fallback | `groq\|anthropic`; precedence is groq → anthropic |
+| `CF_TRANSLATE_PROVIDER` | Force translate provider for `/clip-forge:dub` | `groq\|anthropic`; mirrors `CF_LLM_PROVIDER` shape |
 
 ## Quickstart
 
@@ -316,6 +377,7 @@ Pass `--yolo` to skip every approval gate and ship 10 clips unattended:
 | `/clip-forge:voice-clone`  | Upload a 30 s sample to ElevenLabs/Cartesia/Groq/Piper; save `voice_id` to `voices.json` |
 | `/clip-forge:dub`          | Translate + TTS-dub the transcript into N languages; emit per-lang `edit.dub-<lang>.json` |
 | `/clip-forge:brand-kit`    | Register logo / endcard / lower-third in `brand-kit.json`; renderer burns them into every clip |
+| `/clip-forge:edit`         | Content-hash diff + partial re-render via `render_manifest.json`; LLM-driven JSON-patch edits with `--prompt "<text>"` |
 | `/clip-forge:publish`      | Post to TikTok, Reels, Shorts, X |
 | `/clip-forge:schedule`     | Queue posts for later; monitor drains the queue |
 | `/clip-forge:analytics`    | Per-clip views, watch-time, retention report |

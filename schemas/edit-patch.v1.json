@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "edit-patch.v1",
+  "title": "ClipForge cf-edit RFC 6902 JSON patch v1",
+  "description": "Shape contract for the LLM-emitted JSON patch consumed by /clip-forge:edit --prompt. Three-layer validation: (1) this schema; (2) JSON Pointer whitelist enforced in bin/lib/edit-patch.mjs::applyPatch (the LLM may NOT edit /crop_path /audio_source /clip_id /source /output /version); (3) dry-run preview via AskUserQuestion. See PLAN-v0.4.0 §3.4 + §7 Q5.",
+  "type": "object",
+  "required": ["patch"],
+  "additionalProperties": false,
+  "properties": {
+    "patch": {
+      "type": "array",
+      "description": "RFC 6902 patch ops. Empty array is valid (used by the LLM to signal 'ambiguous_prompt' or 'no change needed').",
+      "items": {
+        "type": "object",
+        "required": ["op", "path"],
+        "additionalProperties": false,
+        "properties": {
+          "op":    { "enum": ["add", "replace", "remove"] },
+          "path":  { "type": "string", "description": "JSON Pointer per RFC 6901. Must start with '/'." },
+          "value": {}
+        }
+      }
+    },
+    "warning": {
+      "type": ["object", "null"],
+      "description": "Optional structured warning from the LLM when it could not safely interpret the prompt. Example codes: ambiguous_prompt, scope_exceeds_whitelist.",
+      "required": ["code", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "code":    { "type": "string" },
+        "message": { "type": "string" }
+      }
+    }
+  }
+}

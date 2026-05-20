@@ -1,0 +1,448 @@
+#!/usr/bin/env node
+// cf-edit — dispatcher for /clip-forge:edit (v0.4.0 pillar 4).
+//
+// Two modes:
+//   1. Diff mode (default): content-hash diff against render_manifest.json,
+//      re-render only stale clips via `cf-ffmpeg render`.
+//   2. Prompt mode (--prompt "<text>"): LLM emits an RFC 6902 patch
+//      against current edit.json → 3-layer validation → AskUserQuestion
+//      preview (unless --auto-apply / --yolo) → patch applied → diff-mode
+//      re-render kicks in.
+//
+// Flags:
+//   --slug <slug>      REQUIRED (or auto-detect single project under ./uploads)
+//   --force            re-render every selected clip regardless of staleness
+//   --dry-run          print the diff, perform no work, no manifest mutation
+//   --only <c01,c03>   restrict to a subset of clip IDs
+//   --prompt "<text>"  invoke LLM patch path
+//   --auto-apply       skip the LLM patch preview AskUserQuestion gate
+//   --yolo             implies --auto-apply
+//   --provider <name>  override LLM provider (groq|anthropic)
+//   --no-json-logs     suppress NDJSON event lines
+//
+// Invariants (PLAN-v0.4.0 §3.4):
+//   E1: --dry-run prints exactly the stale set; empty diff → empty print.
+//   E2: After non-dry edit, manifest input_hashes match current inputs.
+//   E3: --force always re-renders all selected + updates manifest.
+//   E4: Idempotent — two runs with no changes → second renders zero clips.
+//   E5: Missing manifest → cold-start renders ALL selected clips.
+//   E6: Atomic manifest write — write-then-rename, fsync between.
+//   E7: Pillar 2 ai_costs block PRESERVED across cf-edit rewrites.
+
+import { spawnSync } from 'node:child_process';
+import {
+  existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, statSync,
+} from 'node:fs';
+import { dirname, join, resolve as resolvePath } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
+
+import {
+  computeInputHashes, diffClips, loadManifestFile, saveManifestAtomic,
+  recordClipRender, manifestPathForSlug, hashFileSha256,
+} from './lib/render-manifest.mjs';
+import { complete as llmComplete } from './lib/llm.mjs';
+import {
+  validatePatchPayload, applyPatch, summarisePatch, WHITELIST,
+} from './lib/edit-patch.mjs';
+import {
+  loadManifest as loadBudgetManifest, saveManifest as saveBudgetManifest,
+  projectCharge, recordCharge,
+} from './lib/budget.mjs';
+
+const PLUGIN_ROOT = resolvePath(fileURLToPath(import.meta.url), '..', '..');
+const CF_FFMPEG   = resolvePath(PLUGIN_ROOT, 'bin', 'cf-ffmpeg');
+const PROMPT_PATH = resolvePath(PLUGIN_ROOT, 'config', 'llm-prompts', 'cf-edit-v1.md');
+
+function die(msg, code = 1) {
+  process.stderr.write('cf-edit: ' + msg + '\n');
+  process.exit(code);
+}
+
+function parseArgs(argv) {
+  const out = {
+    slug:        null,
+    force:       false,
+    dryRun:      false,
+    only:        null,
+    prompt:      null,
+    autoApply:   false,
+    yolo:        false,
+    provider:    null,
+    jsonLogs:    true,
+    rendersRoot: './renders',
+    clipsRoot:   './clips',
+  };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--help' || a === '-h') { printHelp(); process.exit(0); }
+    else if (a === '--slug')         out.slug = argv[++i];
+    else if (a === '--force')        out.force = true;
+    else if (a === '--dry-run')      out.dryRun = true;
+    else if (a === '--only')         out.only = String(argv[++i] || '').split(',').map((s) => s.trim()).filter(Boolean);
+    else if (a === '--prompt')       out.prompt = argv[++i];
+    else if (a === '--auto-apply')   out.autoApply = true;
+    else if (a === '--yolo')         { out.yolo = true; out.autoApply = true; }
+    else if (a === '--provider')     out.provider = argv[++i];
+    else if (a === '--no-json-logs') out.jsonLogs = false;
+    else if (a === '--renders-root') out.rendersRoot = argv[++i];
+    else if (a === '--clips-root')   out.clipsRoot = argv[++i];
+    else die('unknown flag: ' + a);
+  }
+  if (!out.slug) {
+    const auto = autoDetectSlug(out.clipsRoot);
+    if (!auto) die('--slug required (no single project found under ' + out.clipsRoot + ')');
+    out.slug = auto;
+  }
+  return out;
+}
+
+function autoDetectSlug(clipsRoot) {
+  if (!existsSync(clipsRoot)) return null;
+  try {
+    const entries = readdirSync(clipsRoot, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name);
+    if (entries.length === 1) return entries[0];
+  } catch { /* fall through */ }
+  return null;
+}
+
+function printHelp() {
+  process.stdout.write(`cf-edit — content-hash diff + partial re-render + prompt-driven edits
+
+usage:
+  cf-edit --slug <slug> [--dry-run | --force | --only c01,c03]
+  cf-edit --slug <slug> --prompt "<text>" [--auto-apply | --yolo]
+
+modes:
+  diff      default — diff inputs against render_manifest.json, re-render stale clips
+  prompt    --prompt "<text>" — LLM emits RFC 6902 patch against edit.json
+
+flags:
+  --slug <slug>         project slug under ./clips/<slug>/ (auto-detected if single)
+  --force               re-render every selected clip regardless of staleness
+  --dry-run             print the diff, perform no work
+  --only c01,c03        restrict to a subset of clip IDs
+  --prompt "<text>"     invoke the LLM patch path
+  --auto-apply          skip the LLM patch preview gate
+  --yolo                implies --auto-apply
+  --provider <name>     override LLM provider (groq|anthropic)
+  --no-json-logs        suppress NDJSON event lines
+
+env:
+  GROQ_API_KEY            cheap LLM (default)
+  ANTHROPIC_API_KEY       fallback LLM (or override via CF_LLM_PROVIDER=anthropic)
+  CF_LLM_PROVIDER         force groq|anthropic
+  CF_LLM_MOCK=<path>      inject deterministic mock LLM (test path)
+  CF_AI_BUDGET_USD        cumulative paid-skill cost cap (default 10.00)
+`);
+}
+
+function jlog(opts, obj) {
+  if (opts.jsonLogs) process.stdout.write(JSON.stringify(obj) + '\n');
+}
+
+function listClipsForSlug(opts) {
+  const slugDir = join(opts.clipsRoot, opts.slug);
+  if (!existsSync(slugDir)) return [];
+  const out = [];
+  for (const e of readdirSync(slugDir, { withFileTypes: true })) {
+    if (!e.isDirectory()) continue;
+    const editPath = join(slugDir, e.name, 'edit.json');
+    if (existsSync(editPath)) out.push({ clip_id: e.name, edit_json_path: editPath });
+  }
+  if (opts.only) {
+    return out.filter((c) => opts.only.includes(c.clip_id));
+  }
+  return out;
+}
+
+async function runDiffMode(opts) {
+  const manifestPath = manifestPathForSlug(opts.slug, { rendersRoot: opts.rendersRoot });
+  const manifest = loadManifestFile(manifestPath, { slug: opts.slug });
+  const clips = listClipsForSlug(opts);
+  if (clips.length === 0) {
+    jlog(opts, { event: 'done', ok: true, stale: [], reason: 'no_clips_found',
+                  manifest_path: manifestPath });
+    return 0;
+  }
+  let stale;
+  let reasons;
+  if (opts.force) {
+    stale = clips.map((c) => c.clip_id);
+    reasons = Object.fromEntries(stale.map((id) => [id, { reason: 'force', stale_keys: [] }]));
+  } else {
+    const diff = diffClips(clips, manifest);
+    stale = diff.stale;
+    reasons = diff.reasons;
+  }
+  if (opts.dryRun) {
+    jlog(opts, { event: 'diff', stale, reasons, manifest_path: manifestPath, dry_run: true });
+    process.stdout.write(JSON.stringify({
+      event: 'done', ok: true, stale, dry_run: true,
+      manifest_path: manifestPath,
+    }) + '\n');
+    return 0;
+  }
+  if (stale.length === 0) {
+    jlog(opts, { event: 'done', ok: true, stale: [], manifest_path: manifestPath,
+                  reason: 'idempotent_noop' });
+    return 0;
+  }
+  // Render each stale clip in order; record into manifest atomically.
+  for (const id of stale) {
+    const clip = clips.find((c) => c.clip_id === id);
+    jlog(opts, { event: 'render_start', clip_id: id, reason: reasons[id]?.reason || 'unknown' });
+    const r = spawnSync('node', [CF_FFMPEG, 'render', '--manifest', clip.edit_json_path], {
+      cwd: PLUGIN_ROOT, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env },
+    });
+    if (r.status !== 0) {
+      process.stderr.write('cf-edit: render failed for ' + id + ': ' +
+        (r.stderr || '').slice(-400) + '\n');
+      jlog(opts, { event: 'render_failed', clip_id: id, exit: r.status });
+      return 1;
+    }
+    // Re-read edit.json's `output` to know where the MP4 landed, and compute
+    // the rendered_sha256 for the manifest.
+    let editObj;
+    try { editObj = JSON.parse(readFileSync(clip.edit_json_path, 'utf-8')); }
+    catch { editObj = {}; }
+    const outputPath = editObj.output || null;
+    const renderedSha = outputPath ? hashFileSha256(outputPath) : null;
+    recordClipRender(manifest, {
+      clip_id:         id,
+      output:          outputPath,
+      input_hashes:    computeInputHashes(clip.edit_json_path),
+      rendered_sha256: renderedSha,
+      rerender_reason: reasons[id]?.reason || 'unknown',
+    });
+    saveManifestAtomic(manifestPath, manifest);
+    jlog(opts, { event: 'render_done', clip_id: id, output: outputPath,
+                  rendered_sha256: renderedSha });
+  }
+  jlog(opts, { event: 'done', ok: true, stale, manifest_path: manifestPath });
+  return 0;
+}
+
+async function runPromptMode(opts) {
+  const clips = listClipsForSlug(opts);
+  if (clips.length === 0) {
+    process.stderr.write('cf-edit: prompt mode requires at least one clip under ' +
+      join(opts.clipsRoot, opts.slug) + '\n');
+    return 1;
+  }
+  // Default to the first clip (typically c01) — the user can scope with --only.
+  const targetClip = clips[0];
+  let editObj;
+  try { editObj = JSON.parse(readFileSync(targetClip.edit_json_path, 'utf-8')); }
+  catch (e) {
+    process.stderr.write('cf-edit: edit.json unreadable: ' + e.message + '\n');
+    return 1;
+  }
+
+  const systemPrompt = existsSync(PROMPT_PATH)
+    ? readFileSync(PROMPT_PATH, 'utf-8')
+    : 'You are clip-edit-assistant. Reply with STRICT JSON: {"patch":[],"warning":null}.';
+
+  const userPrompt = buildUserPrompt(opts.prompt, editObj);
+
+  // Budget pre-flight — the LLM call is paid.
+  const manifestPath = manifestPathForSlug(opts.slug, { rendersRoot: opts.rendersRoot });
+  let budgetManifest = loadBudgetManifest(manifestPath, { slug: opts.slug });
+  // The Groq LLM call is ~$0.001 per edit. We pre-charge the budget at the
+  // ESTIMATE so the 80% checkpoint can fire before we actually spend; the
+  // actual recordCharge uses the post-call usage figure.
+  const estimateUsd = 0.005;
+  const charge = projectCharge(budgetManifest, estimateUsd);
+  if (!charge.allowed) {
+    jlog(opts, { event: 'budget_exhausted', cumulative_usd: budgetManifest.ai_costs.cumulative_usd,
+                  cap_usd: budgetManifest.ai_costs.budget_cap_usd });
+    process.stderr.write('cf-edit: budget cap reached; --prompt mode refused.\n');
+    return 1;
+  }
+  if (charge.checkpoint_hit && !opts.yolo) {
+    jlog(opts, {
+      event: 'budget_checkpoint',
+      cumulative_usd: budgetManifest.ai_costs.cumulative_usd,
+      cap_usd:        budgetManifest.ai_costs.budget_cap_usd,
+      used_pct:       charge.used_pct_after,
+      message:        'Approaching budget cap; raise via CF_AI_BUDGET_USD or re-run with --yolo.',
+    });
+  }
+
+  let retryCount = 0;
+  let rejectedReason = null;
+  let validated = null;
+  let lastError = null;
+  let cumulativeLlmCost = 0;
+  let lastProvider = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const augmentedUser = (attempt === 0) ? userPrompt :
+      (userPrompt + '\n\nPREVIOUS ATTEMPT FAILED VALIDATION:\n' + lastError +
+        '\nReturn STRICT JSON only matching the schema.');
+    const r = await llmComplete({
+      system:     systemPrompt,
+      user:       augmentedUser,
+      provider:   opts.provider,
+      max_tokens: 2048,
+    });
+    if (r.fallback_used) {
+      jlog(opts, { event: 'llm_fallback', fallback_reason: r.fallback_reason,
+                    provider_used: r.provider_used });
+      if (r.fallback_reason === 'no_llm_provider') {
+        process.stdout.write(JSON.stringify({
+          event: 'done', ok: true, fallback_used: true,
+          fallback_reason: 'no_llm_provider',
+          message: 'set GROQ_API_KEY or ANTHROPIC_API_KEY to enable --prompt; diff mode still works.',
+        }) + '\n');
+        return 0;
+      }
+      process.stderr.write('cf-edit: LLM failed: ' + r.fallback_reason + '\n');
+      return 1;
+    }
+    cumulativeLlmCost += (r.cost_usd || 0);
+    lastProvider = r.provider_used;
+    // Parse JSON.
+    let parsed;
+    try { parsed = JSON.parse(r.text); }
+    catch (e) {
+      lastError = 'json_parse_failed: ' + e.message + ' :: response head: ' + r.text.slice(0, 200);
+      retryCount++;
+      continue;
+    }
+    const v = validatePatchPayload(parsed);
+    if (!v.ok) {
+      lastError = 'validation_failed: ' + v.rejected_reason + ' :: ' +
+                  JSON.stringify(v.shape_errors.concat(v.whitelist_rejected));
+      rejectedReason = v.rejected_reason;
+      retryCount++;
+      continue;
+    }
+    validated = v;
+    rejectedReason = null;
+    break;
+  }
+  if (!validated) {
+    jlog(opts, {
+      event:           'llm_patch_rejected',
+      retry_count:     retryCount,
+      rejected_reason: rejectedReason || 'unknown',
+      detail:          lastError,
+    });
+    process.stderr.write('cf-edit: LLM patch invalid after retries — ' + lastError + '\n');
+    // Record the spend even on rejection (we still paid the provider).
+    if (cumulativeLlmCost > 0 && lastProvider) {
+      recordCharge(budgetManifest, {
+        provider: lastProvider, kind: 'llm', delta_usd: cumulativeLlmCost,
+        clip_id: targetClip.clip_id,
+      });
+      saveBudgetManifest(manifestPath, budgetManifest);
+    }
+    return 1;
+  }
+
+  // If the LLM returned an empty patch with a warning, surface it without
+  // applying anything.
+  if (validated.patch.length === 0) {
+    jlog(opts, {
+      event:    'llm_patch_empty',
+      warning:  validated.warning,
+      retry_count: retryCount,
+      cost_usd: cumulativeLlmCost,
+      provider_used: lastProvider,
+    });
+    if (cumulativeLlmCost > 0 && lastProvider) {
+      recordCharge(budgetManifest, {
+        provider: lastProvider, kind: 'llm', delta_usd: cumulativeLlmCost,
+        clip_id: targetClip.clip_id,
+      });
+      saveBudgetManifest(manifestPath, budgetManifest);
+    }
+    return 0;
+  }
+
+  // Layer 3 — auto dry-run preview. The dispatcher emits the patch
+  // summary as an NDJSON event so the SKILL markdown can call
+  // AskUserQuestion. When --auto-apply / --yolo is set, we skip the gate
+  // and go straight to apply.
+  jlog(opts, {
+    event:         'patch_preview',
+    clip_id:       targetClip.clip_id,
+    summary:       summarisePatch(validated.patch),
+    patch:         validated.patch,
+    auto_apply:    opts.autoApply,
+  });
+
+  // Apply.
+  const applied = applyPatch(editObj, validated.patch);
+  if (!applied.ok) {
+    process.stderr.write('cf-edit: patch apply failed: ' + applied.error + '\n');
+    return 1;
+  }
+  // Write the patched edit.json back to disk atomically.
+  const patchedJson = JSON.stringify(applied.doc, null, 2) + '\n';
+  const tmpEdit = targetClip.edit_json_path + '.tmp.' + process.pid + '.' + Date.now();
+  writeFileSync(tmpEdit, patchedJson);
+  const fs = await import('node:fs');
+  fs.renameSync(tmpEdit, targetClip.edit_json_path);
+
+  // Record LLM spend (real post-call cost).
+  if (cumulativeLlmCost > 0 && lastProvider) {
+    recordCharge(budgetManifest, {
+      provider: lastProvider, kind: 'llm', delta_usd: cumulativeLlmCost,
+      clip_id: targetClip.clip_id,
+    });
+    saveBudgetManifest(manifestPath, budgetManifest);
+  }
+
+  jlog(opts, {
+    event:           'patch_applied',
+    clip_id:         targetClip.clip_id,
+    edit_json_path:  targetClip.edit_json_path,
+    retry_count:     retryCount,
+    cost_usd:        cumulativeLlmCost,
+    provider_used:   lastProvider,
+  });
+
+  // Now run diff mode to actually re-render the changed clip. The patched
+  // edit.json sha changed, so the diff naturally flags this clip stale.
+  return await runDiffMode(opts);
+}
+
+function buildUserPrompt(userText, editObj) {
+  // Strip noisy fields from edit.json for the LLM context — we only need the
+  // editable shape, not the heavy paths.
+  const slim = {
+    clip_id:        editObj.clip_id || null,
+    target_aspect:  editObj.target_aspect || '9:16',
+    hook_overlay:   editObj.hook_overlay || null,
+    progress_bar:   editObj.progress_bar || null,
+    cuts:           editObj.cuts || null,
+    brand_kit:      editObj.brand_kit ? { name: editObj.brand_kit.name || null } : null,
+    watermark:      editObj.watermark || null,
+  };
+  return (
+    'Current edit.json (editable fields only):\n' +
+    JSON.stringify(slim, null, 2) +
+    '\n\nUser request:\n' +
+    userText +
+    '\n\nReturn STRICT JSON only. Use "replace" for existing fields, "add" for new ones.'
+  );
+}
+
+(async () => {
+  try {
+    const opts = parseArgs(process.argv.slice(2));
+    if (opts.prompt) {
+      const code = await runPromptMode(opts);
+      process.exit(code);
+    } else {
+      const code = await runDiffMode(opts);
+      process.exit(code);
+    }
+  } catch (e) {
+    die(e.message, 1);
+  }
+})();
