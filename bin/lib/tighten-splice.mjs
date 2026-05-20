@@ -209,7 +209,7 @@ export function buildSpliceGraph({ plan, cropFilterArg, captionsPath, hasAudio, 
   }
   if (captionsPath) {
     const ascii = escapeAssPath(captionsPath);
-    videoParts.push(`${preCaptionLabel}ass=${ascii}[vout]`);
+    videoParts.push(`${preCaptionLabel}ass=f=${ascii}[vout]`);
   } else {
     videoParts.push(`${preCaptionLabel}null[vout]`);
   }

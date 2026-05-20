@@ -192,7 +192,7 @@ async function ingest(src, dst) {
 async function captionBurn(src, ass, dst) {
   mkdirSync(dirname(dst), { recursive: true });
   const ascii = escapeAssPath(ass);
-  const plan = buildFfmpegPlan(['-i', src, '-vf', 'ass=' + ascii], ['-c:a', 'copy', dst], {
+  const plan = buildFfmpegPlan(['-i', src, '-vf', 'ass=f=' + ascii], ['-c:a', 'copy', dst], {
     cpuPreset: 'fast',
     cpuCrf: 20,
   });
@@ -299,7 +299,7 @@ export function planCropArgs({ crop, source, output, startMs, endMs, captionsPat
     let vf = decision.filterArg;
     if (overlayFilter) vf += ',' + overlayFilter;
     if (captionsPath && existsSync(captionsPath)) {
-      vf += ',ass=' + escapeAssPath(captionsPath);
+      vf += ',ass=f=' + escapeAssPath(captionsPath);
     }
     args.push('-vf', vf);
     if (audioSource) args.push('-map', '0:v', '-map', '1:a?');
@@ -326,7 +326,7 @@ function appendCaptionsToScript(captionsPath) {
   // Captions are inserted between the crop+scale chain output and [v]. The
   // filter-script body produced by buildFilterScript ends in '[v]\n'; we
   // splice an ass=… filter just before [v].
-  return ',ass=' + escapeAssPath(captionsPath);
+  return ',ass=f=' + escapeAssPath(captionsPath);
 }
 
 // Insert a Hook style + Dialogue into an existing captions.ass body without
