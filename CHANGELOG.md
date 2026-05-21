@@ -5,6 +5,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-21
+
 ### Added — v0.4.0 pillar 6: speaker-aware reframe + split-screen
 
 - New pure-logic library `bin/lib/speaker-timeline.mjs`. Walks the

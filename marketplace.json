@@ -3,7 +3,7 @@
   "_comment": "Drop this snippet into the `plugins` array of a marketplace.json (e.g. anthropics/claude-plugins-community).",
   "name": "clip-forge",
   "source": "github:rdh073/clip-forge",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "description": "Turn long videos into 10+ viral shorts — AI clip detection, auto-reframe, viral captions, render, schedule, publish. All from your terminal.",
   "author": "rdh073",
   "license": "MIT",
