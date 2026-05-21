@@ -593,3 +593,27 @@ All six picks from §2 have shipped on master. Each EXIT CRITERIA gate from §9 
 | 8 | `render_report v2` schema bump | **DEFERRED to v0.5.0** | v0.4.0 ships with `render_report.v1.json` extended additively across pillars 2-6. The required-field list is unchanged from v1; readers of v1 accept v0.4.0-produced reports because every new field is optional / nullable. A formal v2 bump that re-architects the schema (e.g., moves AI cost blocks into a sibling file, splits per-pillar telemetry into discrete schemas) is **explicitly deferred to v0.5.0**. The additive extensions in v1 are sufficient for v0.4.0's surface; a v2 bump now would be premature schema churn. |
 
 **v0.4.0 release readiness:** confirmed. The deferred v2 schema (gate 8) does not block release — additive extension of v1 satisfies every downstream consumer in v0.4.0.
+
+### Known platform limitations (v0.4.0)
+
+CI matrix runs on `ubuntu-latest` + `macos-latest`. After the v0.4.0 release-tag preflight surfaced + fixed three pre-existing CI gaps (the pillar 2 sh→Node cf-whisper sh-syntax-check break, the cross-platform `ass=` filter quoting + positional shorthand, and the missing-libass-in-default-brew-ffmpeg issue resolved via the homebrew-ffmpeg/ffmpeg tap), one narrow test failure remains on macOS:
+
+- **`tests/integration/dub-render.test.mjs::render-stinger`** — SKIP-gated on macOS. `buildStingerMp4` (lavfi `color=black` video + WAV audio + concat-demuxer) produces a 3 s output on macOS instead of the expected 4.8 s. Linux is green. Other prepend/append audio paths work cross-platform:
+  - `buildAiStingerMp4` (pillar 5, real-MP4 transcode + concat) — green on macOS
+  - `buildEndcardMp4` (pillar 3 brand-kit endcard PNG/MP4) — green on macOS
+  - dub-render composition gate (without prepend/append, just `dub.audio_source`) — green on macOS
+  - All dub.test.mjs / voice-clone tests — green on macOS
+
+  Root cause appears to be ffmpeg's macOS stream-mapping behavior on the specific lavfi+WAV combination in `buildStingerMp4`. Diagnostic attempts (explicit `-t durArg`, `-shortest` belt+suspenders, `-map 0:v:0 -map 1:a:0`) did not resolve it. Targeted for proper investigation in v0.4.1. The `prepend_audio.tts` / `append_audio.audio_path` feature works on Linux; macOS users hit a soft warning in render_report (`prepend_stinger_build_failed` / `stinger_concat_failed`) and the render proceeds without the stinger appended.
+
+  Linux full suite at tip: 435 / 428 pass / 7 skip / 0 fail. macOS full suite with skip: 435 / 427 pass / 8 skip / 0 fail.
+
+### CI hardening landed during the release preflight
+
+The v0.4.0 release-tag flow surfaced and fixed three CI bugs that had been latent across v0.3.0 + v0.4.0:
+
+1. **`fix(ci): move v0.3.0+v0.4.0 dispatchers to Node syntax check`** (`144e107`) — `.github/workflows/ci.yml` still ran `sh -n bin/cf-whisper` after pillar 2 rewrote that dispatcher from sh to Node. Every push from pillar 2 forward fast-failed on the sh-syntax check, short-circuiting the test step and hiding ALL downstream macOS issues from review.
+2. **`fix(cf-ffmpeg): drop non-portable single-quote wrap + use ass=f=<path>`** (`e8ec10f`, `907c00b`) — both fixes for the `ass=` filter argument. Linux libavfilter was lenient; macOS strict.
+3. **`ci(macos): swap brew default ffmpeg for homebrew-ffmpeg/ffmpeg tap`** (`3a0a172`) — default `brew install ffmpeg` produces a build without `--enable-libass`. The homebrew-ffmpeg tap ships a libass-enabled "full build".
+
+Lesson for v0.5.0 retrospective: brutal-review per-pillar MUST include checking CI status on the just-pushed commit (`gh run list --commit <SHA>`), not just local `npm test` + local `claude plugin validate`. Trust-but-verify the CI matrix, not just the local environment.
