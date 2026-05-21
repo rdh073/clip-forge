@@ -616,6 +616,7 @@ async function buildStingerMp4({ audioPath, outputMp4, canvasW, canvasH }) {
     '-f', 'lavfi', '-t', durArg,
     '-i', 'color=c=black:s=' + canvasW + 'x' + canvasH + ':r=30',
     '-t', durArg, '-i', audioPath,
+    '-map', '0:v:0', '-map', '1:a:0',
     '-shortest',
     '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'fast', '-crf', '22',
     '-c:a', 'aac', '-b:a', '192k',
