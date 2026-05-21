@@ -598,28 +598,38 @@ async function buildStingerMp4({ audioPath, outputMp4, canvasW, canvasH }) {
   if (!audioPath || !existsSync(audioPath)) return false;
   // Probe audio duration explicitly. Earlier impl used `-shortest` with an
   // infinite `color=` lavfi source — Linux ffmpeg truncated to the audio
-  // input, but macOS ffmpeg 8.1 (homebrew-ffmpeg tap) does not, producing a
-  // multi-hour MP4 that the downstream concat then mis-handles. Explicit
-  // `-t <durS>` on both inputs is portable.
+  // input, but macOS ffmpeg 8.1 (homebrew-ffmpeg tap) did not. Explicit
+  // `-t <durS>` on both inputs PLUS `-shortest` is belt-and-suspenders.
   const probe = spawnSync('ffprobe', [
     '-v', 'error', '-show_entries', 'format=duration',
     '-of', 'default=noprint_wrappers=1:nokey=1', audioPath,
   ], { encoding: 'utf-8' });
   const durS = parseFloat((probe.stdout || '').trim());
-  if (!Number.isFinite(durS) || durS <= 0) return false;
+  if (!Number.isFinite(durS) || durS <= 0) {
+    process.stderr.write('cf-ffmpeg: buildStingerMp4 ffprobe failed for '
+      + audioPath + ' stderr=' + (probe.stderr || '').slice(0, 200) + '\n');
+    return false;
+  }
   const durArg = durS.toFixed(3);
   const args = [
     '-hide_banner', '-loglevel', 'error', '-y',
     '-f', 'lavfi', '-t', durArg,
     '-i', 'color=c=black:s=' + canvasW + 'x' + canvasH + ':r=30',
     '-t', durArg, '-i', audioPath,
+    '-shortest',
     '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'fast', '-crf', '22',
     '-c:a', 'aac', '-b:a', '192k',
     '-movflags', '+faststart',
     outputMp4,
   ];
-  const r = spawnSync('ffmpeg', args);
-  return r.status === 0;
+  const r = spawnSync('ffmpeg', args, { encoding: 'utf-8' });
+  if (r.status !== 0) {
+    process.stderr.write('cf-ffmpeg: buildStingerMp4 ffmpeg exit ' + r.status
+      + ' for ' + audioPath + ' (' + durArg + 's) stderr='
+      + (r.stderr || '').slice(0, 400) + '\n');
+    return false;
+  }
+  return true;
 }
 
 // Build an MP4 from an AI-avatar stinger source MP4. Transcodes to the
